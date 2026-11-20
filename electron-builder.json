@@ -1,0 +1,55 @@
+{
+  "appId": "com.winmusic.app",
+  "productName": "winMusic",
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "Nicetm",
+      "repo": "winmusic",
+      "releaseType": "release"
+    }
+  ],
+  "directories": {
+    "output": "release"
+  },
+  "asar": true,
+  "files": [
+    "dist",
+    "dist-electron",
+    "!node_modules/ffprobe-static/bin/darwin/**",
+    "!node_modules/ffprobe-static/bin/linux/**",
+    "!node_modules/ffprobe-static/bin/win32/ia32/**"
+  ],
+  "asarUnpack": [
+    "node_modules/ffmpeg-static/**",
+    "node_modules/ffprobe-static/**"
+  ],
+  "extraResources": [
+    {
+      "from": "bin",
+      "to": "bin"
+    },
+    {
+      "from": "build/icon.png",
+      "to": "icon.png"
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build/icon.ico"
+  },
+  "nsis": {
+    "artifactName": "winMusic-Setup-${version}.${ext}",
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "winMusic"
+  }
+}
