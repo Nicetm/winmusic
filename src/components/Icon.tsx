@@ -29,6 +29,7 @@ export type IconName =
   | 'more'
   | 'lyrics'
   | 'mini'
+  | 'help'
 
 interface Props {
   name: IconName
@@ -108,6 +109,12 @@ const PATHS: Record<IconName, React.ReactNode> = {
   ),
   mini: (
     <path d="M3 5h18v14H3V5zm2 2v10h14V7H5zm2 6h10v2H7v-2z" />
+  ),
+  help: (
+    <path
+      fillRule="evenodd"
+      d="M12 2a10 10 0 110 20 10 10 0 010-20zm0 2a8 8 0 100 16 8 8 0 000-16zm-1 12h2v2h-2v-2zm1-10a3.5 3.5 0 013.5 3.5c0 1.7-.8 2.3-1.6 2.8-.6.4-.9.6-.9 1.1v.6h-2v-.8c0-1.2.6-1.7 1.3-2.2.6-.4 1.2-.7 1.2-1.5a1.5 1.5 0 00-3 0h-2A3.5 3.5 0 0112 6z"
+    />
   ),
 }
 

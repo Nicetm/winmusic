@@ -10,6 +10,7 @@ import { StatusBar } from './components/StatusBar'
 import { Icon } from './components/Icon'
 import { createId } from './utils/id'
 import { NowPlaying } from './components/NowPlaying'
+import { AboutDialog } from './components/AboutDialog'
 import { LyricsView, type LyricsState } from './components/LyricsView'
 import type { Track, RepeatMode } from './types'
 import type { YtSearchResult, MediaTags, M3uEntry } from '../electron/preload'
@@ -31,6 +32,9 @@ export default function App() {
   const library = useLibrary(playlist)
   const [mini, setMini] = useState(false)
   const [showLyrics, setShowLyrics] = useState(false)
+  const [showAbout, setShowAbout] = useState(false)
+  // El menu de la bandeja tambien abre "Acerca de".
+  useEffect(() => window.winmusic.onShowAbout(() => setShowAbout(true)), [])
   const [lyrics, setLyrics] = useState<LyricsState>({ status: 'loading' })
   const [tags, setTags] = useState<MediaTags | null>(null)
   const [fadeSeconds, setFadeSeconds] = useState(() => {
@@ -666,6 +670,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.altKey || e.metaKey) return
+      // Con un dialogo abierto (Acerca de, confirmaciones) no actuan los atajos.
+      if (document.querySelector('.dialog')) return
       const target = e.target as HTMLElement | null
       const tag = target?.tagName
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || target?.isContentEditable) {
@@ -863,7 +869,10 @@ export default function App() {
         fadeSeconds={fadeSeconds}
         onCycleFade={cycleFade}
         notice={notice}
+        onShowAbout={() => setShowAbout(true)}
       />
+
+      {showAbout && <AboutDialog version={__APP_VERSION__} onClose={() => setShowAbout(false)} />}
     </div>
   )
 }

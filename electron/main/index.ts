@@ -7,6 +7,7 @@ import {
   globalShortcut,
   Tray,
   Menu,
+  shell,
 } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
@@ -744,6 +745,20 @@ function registerIpc(): void {
     }
   })
 
+  // --- Acerca de ---
+  // Solo enlaces https: evita que la interfaz pueda abrir rutas locales u
+  // otros protocolos en el sistema.
+  ipcMain.handle('app:openExternal', (_e, url: string) => {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return
+    }
+    if (parsed.protocol === 'https:') void shell.openExternal(parsed.toString())
+  })
+  ipcMain.handle('app:checkUpdates', () => checkForUpdatesManually())
+
   ipcMain.handle('windows:getOpenState', () => ({
     eq: openState.eq,
     search: openState.search,
@@ -1068,6 +1083,16 @@ function createTray(): void {
       { label: 'Detener', click: () => sendMediaCommand('stop') },
       { type: 'separator' },
       { label: 'Buscar actualizaciones', click: checkForUpdatesManually },
+      {
+        label: 'Acerca de winMusic',
+        click: () => {
+          if (!win || win.isDestroyed()) return
+          win.show()
+          if (win.isMinimized()) win.restore()
+          win.focus()
+          win.webContents.send('app:showAbout')
+        },
+      },
       { label: 'Salir', click: () => app.quit() },
     ]),
   )

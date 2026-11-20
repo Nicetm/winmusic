@@ -77,6 +77,15 @@ const api = {
     eqPreset: string
   }): void => ipcRenderer.send('state:saveAudio', audio),
 
+  // --- Acerca de ---
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke('app:openExternal', url),
+  checkForUpdates: (): Promise<void> => ipcRenderer.invoke('app:checkUpdates'),
+  onShowAbout: (cb: () => void): (() => void) => {
+    const handler = () => cb()
+    ipcRenderer.on('app:showAbout', handler)
+    return () => ipcRenderer.removeListener('app:showAbout', handler)
+  },
+
   // --- Avisos del main (p.ej. actualizaciones) ---
   onNotice: (cb: (message: string) => void): (() => void) => {
     const handler = (_e: unknown, message: string) => cb(message)
