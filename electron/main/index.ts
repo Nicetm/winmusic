@@ -52,6 +52,8 @@ const state: PersistedState = loadState()
 function persistWindowBounds(): void {
   // Durante el cierre no tocamos el estado: ya lo congelamos en before-quit.
   if (quitting) return
+  // Minimizadas, las ventanas pueden reportar posiciones fuera de pantalla.
+  if ([win, eqWin, searchWin].some((w) => w && !w.isDestroyed() && w.isMinimized())) return
   if (win && !win.isDestroyed()) {
     // En modo mini se guarda el tamano normal, no la barra compacta.
     state.windows.main = miniRestore ?? win.getBounds()
@@ -376,6 +378,7 @@ function createWindow(): void {
     onMainBoundsChange()
     persistWindowBounds()
   })
+  linkMinimize(win)
   // 'close' ocurre ANTES de destruir las ventanas: capturamos el estado con
   // las secundarias aun abiertas y lo congelamos para el proximo arranque.
   win.on('close', () => {
@@ -505,13 +508,17 @@ function createSecondary(cfg: SecondaryConfig): void {
 
   // Mientras arrastro una secundaria, se separa del grupo.
   w.on('move', () => {
-    if (suppressMove) return
-    dockedState[cfg.role] = false
+    // Minimizar/restaurar tambien emite 'move': no cuenta como arrastre.
+    if (suppressMove || syncingMinimize || w.isMinimized()) return
+    // Si sigue exactamente pegada (p.ej. 'move' al restaurar), no se separa.
+    if (!isTouchingGroup(w)) dockedState[cfg.role] = false
     persistWindowBounds()
   })
   w.on('resize', () => persistWindowBounds())
+  linkMinimize(w)
   // Al soltar, intento re-acoplar si quedo junto a un borde del grupo.
   w.on('moved', () => {
+    if (syncingMinimize || w.isMinimized()) return
     onSecondaryDropped(w)
     persistWindowBounds()
   })
@@ -575,7 +582,9 @@ function groupRects(exclude?: BrowserWindow): Rect[] {
  * derecha no deben moverse (antes se desplazaban y quedaban debajo).
  */
 function onMainBoundsChange(): void {
-  if (suppressMove || !win || win.isDestroyed()) return
+  // Al minimizar Windows puede reportar posiciones fuera de pantalla: no se
+  // arrastran las acopladas en ese estado.
+  if (suppressMove || !win || win.isDestroyed() || win.isMinimized()) return
   const cur = win.getBounds()
   const prev = mainPrev
   mainPrev = cur
@@ -609,6 +618,15 @@ function onMainBoundsChange(): void {
     }
   }
   suppressMove = false
+}
+
+/** true si la ventana esta exactamente acoplada a un borde del grupo. */
+function isTouchingGroup(w: BrowserWindow): boolean {
+  const rect = w.getBounds()
+  return groupRects(w).some((other) => {
+    const snap = computeSnap(rect, other)
+    return !!snap && snap.dx === 0 && snap.dy === 0
+  })
 }
 
 /**
@@ -847,6 +865,34 @@ function registerIpc(): void {
 
 function sendMediaCommand(command: MediaCommand): void {
   win?.webContents.send('media:command', command)
+}
+
+// Evita que minimizar/restaurar las demas ventanas vuelva a disparar sus
+// propios eventos en cadena.
+let syncingMinimize = false
+
+/**
+ * Minimizar cualquier ventana minimiza todas; restaurar cualquiera (desde la
+ * barra de tareas) restaura todas, para que se comporten como una sola app.
+ */
+function linkMinimize(w: BrowserWindow): void {
+  const others = () =>
+    [win, eqWin, searchWin].filter(
+      (o): o is BrowserWindow => !!o && o !== w && !o.isDestroyed(),
+    )
+  w.on('minimize', () => {
+    if (syncingMinimize) return
+    syncingMinimize = true
+    for (const o of others()) if (o.isVisible() && !o.isMinimized()) o.minimize()
+    syncingMinimize = false
+  })
+  w.on('restore', () => {
+    if (syncingMinimize) return
+    syncingMinimize = true
+    for (const o of others()) if (o.isMinimized()) o.restore()
+    syncingMinimize = false
+    w.focus()
+  })
 }
 
 /** Oculta o muestra la principal junto con sus ventanas secundarias. */
