@@ -23,7 +23,7 @@ import {
 import { searchYoutube, resolveAudioUrl, prepareYtdlp } from './youtube'
 import { fetchLyrics, type LyricsQuery } from './lyrics'
 import { exportM3u, importM3u, type M3uTrack } from './m3u'
-import { computeSnap, DOCK_GAP, type Rect } from './windows'
+import { computeSnap, areAdjacent, DOCK_GAP, type Rect } from './windows'
 import { initUpdater, checkForUpdatesManually } from './updater'
 import type { MediaCommand } from '../preload'
 import {
@@ -43,9 +43,10 @@ if (!app.isPackaged) {
 
 // Una sola instancia: dos procesos guardando el mismo archivo se pisan entre
 // si. La segunda instancia sale sin escribir nada (app.exit no dispara
-// before-quit) y la primera pasa al frente.
-const isPrimaryInstance = app.requestSingleInstanceLock()
-if (!isPrimaryInstance) app.exit(0)
+// before-quit) y la primera pasa al frente. Solo en la app instalada: en
+// desarrollo el plugin reinicia electron al recompilar y la instancia nueva
+// encontraba el bloqueo de la anterior y se cerraba.
+if (app.isPackaged && !app.requestSingleInstanceLock()) app.exit(0)
 
 const state: PersistedState = loadState()
 
@@ -394,8 +395,9 @@ function createWindow(): void {
 
   // Reabre las ventanas secundarias que estaban abiertas en la sesion previa.
   win.webContents.once('did-finish-load', () => {
-    if (state.windows.eq?.open) createEqWindow()
+    // Primero el buscador (arriba) y luego el EQ (debajo).
     if (state.windows.search?.open) createSearchWindow()
+    if (state.windows.eq?.open) createEqWindow()
     // Informa a la principal que botones marcar como activos tras restaurar.
     win?.webContents.send('windows:openState', {
       eq: openState.eq,
@@ -438,12 +440,6 @@ const dockedState: Record<Role, boolean> = { eq: false, search: false }
  */
 const openState: Record<Role, boolean> = { eq: false, search: false }
 
-function secondaryWindows(): BrowserWindow[] {
-  return [eqWin, searchWin].filter(
-    (w): w is BrowserWindow => !!w && !w.isDestroyed(),
-  )
-}
-
 function dockedWindows(): BrowserWindow[] {
   const result: BrowserWindow[] = []
   if (eqWin && !eqWin.isDestroyed() && dockedState.eq) result.push(eqWin)
@@ -460,18 +456,20 @@ function roleOf(w: BrowserWindow): Role | null {
 // Bounds previos de la principal para calcular el desplazamiento de cada borde.
 let mainPrev: Rect | null = null
 
-/** Coloca una secundaria apilada a la derecha, debajo de las ya abiertas. */
-function initialPlacement(): { x: number; y: number } {
+/**
+ * Lugar fijo de cada secundaria al abrirse, a la derecha del reproductor:
+ * el buscador arriba y el EQ debajo de el (o arriba si el buscador no esta
+ * pegado al grupo).
+ */
+function slotPosition(role: Role): { x: number; y: number } {
   const m = win?.getBounds()
   if (!m) return { x: 100, y: 100 }
-  let y = m.y
-  for (const w of secondaryWindows()) {
-    const b = w.getBounds()
-    if (Math.abs(b.x - (m.x + m.width + DOCK_GAP)) <= 6) {
-      y = Math.max(y, b.y + b.height + DOCK_GAP)
-    }
+  const x = m.x + m.width + DOCK_GAP
+  if (role === 'eq' && searchWin && !searchWin.isDestroyed() && dockedState.search) {
+    const s = searchWin.getBounds()
+    return { x: s.x, y: s.y + s.height + DOCK_GAP }
   }
-  return { x: m.x + m.width + DOCK_GAP, y }
+  return { x, y: m.y }
 }
 
 function createSecondary(cfg: SecondaryConfig): void {
@@ -480,9 +478,10 @@ function createSecondary(cfg: SecondaryConfig): void {
     existing.focus()
     return
   }
-  // Usa los bounds guardados si existen; si no, los apila junto a la principal.
+  // Se abre siempre en su lugar fijo junto al reproductor; el tamano si se
+  // recuerda.
   const savedBounds = state.windows[cfg.role] as (WindowBounds & { open: boolean }) | undefined
-  const pos = savedBounds ? { x: savedBounds.x, y: savedBounds.y } : initialPlacement()
+  const pos = slotPosition(cfg.role)
   const w = new BrowserWindow({
     width: savedBounds?.width ?? cfg.width,
     height: savedBounds?.height ?? cfg.height,
@@ -502,14 +501,24 @@ function createSecondary(cfg: SecondaryConfig): void {
   })
   cfg.set(w)
   loadRoute(w, cfg.hash)
-  // Al abrir junto a la principal queda acoplada y marcada como abierta.
-  dockedState[cfg.role] = true
   openState[cfg.role] = true
+  // Si se abre el buscador con el EQ pegado al grupo, el EQ baja debajo del
+  // buscador recien abierto (se calcula con sus bounds: aun no figura como
+  // acoplado, asi que slotPosition('eq') lo devolveria arriba).
+  if (cfg.role === 'search' && eqWin && !eqWin.isDestroyed() && dockedState.eq) {
+    const s = w.getBounds()
+    const b = eqWin.getBounds()
+    suppressMove = true
+    eqWin.setBounds({ ...b, x: s.x, y: s.y + s.height + DOCK_GAP })
+    suppressMove = false
+  }
+  // Acoplada segun su posicion real (no se asume).
+  recomputeDocking()
 
   // Mientras arrastro una secundaria, se separa del grupo.
   w.on('move', () => {
     // Minimizar/restaurar tambien emite 'move': no cuenta como arrastre.
-    if (suppressMove || syncingMinimize || w.isMinimized()) return
+    if (suppressMove || isSyncing() || w.isMinimized()) return
     // Si sigue exactamente pegada (p.ej. 'move' al restaurar), no se separa.
     if (!isTouchingGroup(w)) dockedState[cfg.role] = false
     persistWindowBounds()
@@ -518,13 +527,17 @@ function createSecondary(cfg: SecondaryConfig): void {
   linkMinimize(w)
   // Al soltar, intento re-acoplar si quedo junto a un borde del grupo.
   w.on('moved', () => {
-    if (syncingMinimize || w.isMinimized()) return
+    if (isSyncing() || w.isMinimized()) return
     onSecondaryDropped(w)
+    // Si esta ventana se separo, la que estaba pegada solo a ella tambien
+    // deja de seguir al reproductor.
+    recomputeDocking()
     persistWindowBounds()
   })
   w.on('closed', () => {
     cfg.set(null)
     dockedState[cfg.role] = false
+    recomputeDocking()
     // Solo un cierre iniciado por el usuario marca la intencion como cerrada;
     // el cierre al salir de la app conserva openState para la restauracion.
     if (!quitting) {
@@ -621,13 +634,33 @@ function onMainBoundsChange(): void {
   suppressMove = false
 }
 
-/** true si la ventana esta exactamente acoplada a un borde del grupo. */
+/** true si la ventana esta pegada a algun borde del grupo del reproductor. */
 function isTouchingGroup(w: BrowserWindow): boolean {
   const rect = w.getBounds()
-  return groupRects(w).some((other) => {
-    const snap = computeSnap(rect, other)
-    return !!snap && snap.dx === 0 && snap.dy === 0
-  })
+  return groupRects(w).some((other) => areAdjacent(rect, other))
+}
+
+/**
+ * Recalcula que secundarias estan pegadas al grupo segun su posicion real.
+ * Se repite hasta estabilizar porque una puede estar pegada solo a otra
+ * secundaria (p.ej. el EQ debajo del buscador). Evita que una ventana que
+ * quedo separada se mueva con el reproductor al volver a abrir la app.
+ */
+function recomputeDocking(): void {
+  const roles: Role[] = ['eq', 'search']
+  for (const role of roles) dockedState[role] = false
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const role of roles) {
+      const w = role === 'eq' ? eqWin : searchWin
+      if (!w || w.isDestroyed() || dockedState[role]) continue
+      if (isTouchingGroup(w)) {
+        dockedState[role] = true
+        changed = true
+      }
+    }
+  }
 }
 
 /**
@@ -716,10 +749,7 @@ function registerIpc(): void {
     search: openState.search,
   }))
 
-  // La ventana de busqueda pide reproducir/agregar -> la principal maneja la playlist.
-  ipcMain.on('search:play', (_e, result) => {
-    win?.webContents.send('search:playResult', result)
-  })
+  // La ventana de busqueda pide agregar -> la principal maneja la playlist.
   ipcMain.on('search:add', (_e, result) => {
     win?.webContents.send('search:addResult', result)
   })
@@ -931,9 +961,16 @@ function sendMediaCommand(command: MediaCommand): void {
   win?.webContents.send('media:command', command)
 }
 
-// Evita que minimizar/restaurar las demas ventanas vuelva a disparar sus
-// propios eventos en cadena.
+// Mientras se minimizan/restauran las demas ventanas por codigo, sus propios
+// eventos (que pueden llegar despues, de forma asincrona) se ignoran para no
+// disparar una cadena de minimizar/restaurar/enfocar.
 let syncingMinimize = false
+let syncingUntil = 0
+const SYNC_WINDOW_MS = 600
+
+function isSyncing(): boolean {
+  return syncingMinimize || Date.now() < syncingUntil
+}
 
 /**
  * Minimizar cualquier ventana minimiza todas; restaurar cualquiera (desde la
@@ -944,19 +981,62 @@ function linkMinimize(w: BrowserWindow): void {
     [win, eqWin, searchWin].filter(
       (o): o is BrowserWindow => !!o && o !== w && !o.isDestroyed(),
     )
-  w.on('minimize', () => {
-    if (syncingMinimize) return
+
+  // Restaura las demas y las pone al frente: restore() no cambia el orden, y
+  // sin moveTop quedaban detras de las otras aplicaciones.
+  const restoreGroup = () => {
     syncingMinimize = true
+    syncingUntil = Date.now() + SYNC_WINDOW_MS
+    for (const o of others()) {
+      if (o.isMinimized()) o.restore()
+      o.moveTop()
+    }
+    syncingMinimize = false
+    w.moveTop()
+    w.focus()
+  }
+
+  w.on('minimize', () => {
+    if (isSyncing()) return
+    syncingMinimize = true
+    syncingUntil = Date.now() + SYNC_WINDOW_MS
     for (const o of others()) if (o.isVisible() && !o.isMinimized()) o.minimize()
     syncingMinimize = false
   })
   w.on('restore', () => {
-    if (syncingMinimize) return
-    syncingMinimize = true
-    for (const o of others()) if (o.isMinimized()) o.restore()
-    syncingMinimize = false
-    w.focus()
+    if (!isSyncing()) restoreGroup()
   })
+  // Respaldo: al levantar una ventana desde la barra de tareas Windows no
+  // siempre emite 'restore', pero la ventana si recibe el foco.
+  w.on('focus', () => {
+    if (!isSyncing() && others().some((o) => o.isMinimized())) restoreGroup()
+  })
+
+  // En Windows el evento 'restore' de Electron puede llegar tarde o no llegar
+  // (electron/electron#28570), segun como la barra de tareas restaure la
+  // ventana. WM_SIZE si llega siempre: SIZE_MINIMIZED al minimizar y
+  // SIZE_RESTORED / SIZE_MAXIMIZED al volver.
+  if (process.platform === 'win32') {
+    const WM_SIZE = 0x0005
+    const SIZE_RESTORED = 0
+    const SIZE_MINIMIZED = 1
+    const SIZE_MAXIMIZED = 2
+    let wasMinimized = false
+    w.hookWindowMessage(WM_SIZE, (wParam) => {
+      const type = wParam.readUInt32LE(0)
+      if (type === SIZE_MINIMIZED) {
+        wasMinimized = true
+      } else if (wasMinimized && (type === SIZE_RESTORED || type === SIZE_MAXIMIZED)) {
+        wasMinimized = false
+        // Fuera del procesamiento del mensaje, para no reentrar en Windows.
+        setImmediate(() => {
+          if (!w.isDestroyed() && !isSyncing() && others().some((o) => o.isMinimized())) {
+            restoreGroup()
+          }
+        })
+      }
+    })
+  }
 }
 
 /** Oculta o muestra la principal junto con sus ventanas secundarias. */

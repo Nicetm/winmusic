@@ -1,7 +1,7 @@
 {
   "name": "winmusic",
-  "version": "1.3.0",
-  "description": "Reproductor de audio y video estilo Winamp",
+  "version": "1.3.1",
+  "description": "Reproductor de audio y video para Windows",
   "author": "winMusic",
   "main": "dist-electron/main/index.js",
   "private": true,

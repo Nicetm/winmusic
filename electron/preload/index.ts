@@ -100,15 +100,8 @@ const api = {
     ipcRenderer.invoke('search:toggleWindow'),
   getWindowsOpenState: (): Promise<{ eq: boolean; search: boolean }> =>
     ipcRenderer.invoke('windows:getOpenState'),
-  searchPlay: (result: YtSearchResult): void =>
-    ipcRenderer.send('search:play', result),
   searchAdd: (result: YtSearchResult): void =>
     ipcRenderer.send('search:add', result),
-  onSearchPlayResult: (cb: (result: YtSearchResult) => void): (() => void) => {
-    const handler = (_e: unknown, r: YtSearchResult) => cb(r)
-    ipcRenderer.on('search:playResult', handler)
-    return () => ipcRenderer.removeListener('search:playResult', handler)
-  },
   onSearchAddResult: (cb: (result: YtSearchResult) => void): (() => void) => {
     const handler = (_e: unknown, r: YtSearchResult) => cb(r)
     ipcRenderer.on('search:addResult', handler)

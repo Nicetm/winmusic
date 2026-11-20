@@ -1,17 +1,15 @@
 import { useRef, useState } from 'react'
 import type { YtSearchResult } from '../../electron/preload'
-import { Icon } from './Icon'
 import { formatTime } from '../utils/format'
 
 interface Props {
-  onPlay: (result: YtSearchResult) => void
   onAdd: (result: YtSearchResult) => void
 }
 
 // Igual a SEARCH_PAGE_SIZE del main: una pagina incompleta indica que no hay mas.
 const PAGE_SIZE = 10
 
-export function YoutubeSearch({ onPlay, onAdd }: Props) {
+export function YoutubeSearch({ onAdd }: Props) {
   const [query, setQuery] = useState('')
   const [searchedQuery, setSearchedQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -83,14 +81,6 @@ export function YoutubeSearch({ onPlay, onAdd }: Props) {
               {r.duration != null ? ` · ${formatTime(r.duration)}` : ''}
             </span>
             <span className="ytsearch__actions">
-              <button
-                className="ytsearch__action"
-                onClick={() => onPlay(r)}
-                aria-label="Reproducir ahora"
-                title="Reproducir ahora"
-              >
-                <Icon name="play" size={14} />
-              </button>
               <button
                 className="ytsearch__action"
                 onClick={() => onAdd(r)}

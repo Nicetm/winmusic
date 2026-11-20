@@ -436,20 +436,8 @@ export default function App() {
     [playlist, ytResultToTrack],
   )
 
-  const playYoutube = useCallback(
-    (r: YtSearchResult) => {
-      const index = playlist.addTrack(ytResultToTrack(r))
-      if (index >= 0) playIndex(index)
-    },
-    [playlist, ytResultToTrack, playIndex],
-  )
-
   // Puente IPC con la ventana del buscador de YouTube.
   useEffect(() => {
-    const offPlay = window.winmusic.onSearchPlayResult((r) => {
-      playYoutube(r)
-      setSearchOpen(true)
-    })
     const offAdd = window.winmusic.onSearchAddResult((r) => {
       addYoutube(r)
       setSearchOpen(true)
@@ -460,12 +448,11 @@ export default function App() {
       setEqOpen(s.eq)
     })
     return () => {
-      offPlay()
       offAdd()
       offClosed()
       offState()
     }
-  }, [playYoutube, addYoutube])
+  }, [addYoutube])
 
   const isVideo = current?.kind === 'video'
 

@@ -1,6 +1,6 @@
 # winMusic
 
-Reproductor de audio y video para Windows al estilo Winamp, hecho con Electron, React y TypeScript.
+Reproductor de audio y video para Windows, hecho con Electron, React y TypeScript.
 
 by @softkey 2027
 

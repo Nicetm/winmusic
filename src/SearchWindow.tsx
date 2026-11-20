@@ -49,10 +49,7 @@ export default function SearchWindow() {
         </div>
       </div>
 
-      <YoutubeSearch
-        onPlay={(r) => window.winmusic.searchPlay(r)}
-        onAdd={(r) => window.winmusic.searchAdd(r)}
-      />
+      <YoutubeSearch onAdd={(r) => window.winmusic.searchAdd(r)} />
     </div>
   )
 }

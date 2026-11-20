@@ -14,6 +14,23 @@ function overlap(a1: number, a2: number, b1: number, b2: number): number {
   return Math.min(a2, b2) - Math.max(a1, b1)
 }
 
+/** Tolerancia (px) para considerar que dos bordes estan pegados. */
+const ADJACENT_TOLERANCE = 2
+
+/**
+ * true si `a` y `b` estan pegadas por algun borde (separadas por DOCK_GAP) y
+ * se solapan en el otro eje. A diferencia de computeSnap, no exige que esten
+ * alineadas: una ventana pegada al costado sigue pegada aunque este mas abajo.
+ */
+export function areAdjacent(a: Rect, b: Rect): boolean {
+  const near = (x: number, y: number) => Math.abs(x - y) <= ADJACENT_TOLERANCE
+  const vOverlap = overlap(a.y, a.y + a.height, b.y, b.y + b.height) > 0
+  const hOverlap = overlap(a.x, a.x + a.width, b.x, b.x + b.width) > 0
+  const sideBySide = near(a.x + a.width + DOCK_GAP, b.x) || near(b.x + b.width + DOCK_GAP, a.x)
+  const stacked = near(a.y + a.height + DOCK_GAP, b.y) || near(b.y + b.height + DOCK_GAP, a.y)
+  return (vOverlap && sideBySide) || (hOverlap && stacked)
+}
+
 /**
  * Calcula un ajuste (dx, dy) para pegar `moving` a `other` si algun par de
  * bordes esta dentro de SNAP y hay solape en el eje perpendicular. Devuelve
