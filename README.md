@@ -1,1 +1,85 @@
-# winmusic
+# winMusic
+
+Reproductor de audio y video para Windows al estilo Winamp, hecho con Electron, React y TypeScript.
+
+by @softkey 2027
+
+## Descarga
+
+El instalador está en [Releases](https://github.com/Nicetm/winmusic/releases/latest). Incluye todo lo necesario (ffmpeg, ffprobe y yt-dlp): no hay que instalar nada aparte.
+
+El instalador no está firmado, así que Windows SmartScreen puede mostrar un aviso. Para seguir: **Más información → Ejecutar de todas formas**.
+
+Desde la versión 1.2.0 la app se actualiza sola: al abrirse busca una versión nueva, la descarga y pregunta si reiniciar para instalarla.
+
+## Funciones
+
+- **Audio y video locales**: mp3, wav, ogg, flac, m4a, aac, mp4, webm, mkv, mov, avi. Los formatos que Chromium no reproduce (HEVC, MKV, etc.) se convierten al vuelo con ffmpeg.
+- **YouTube**: buscador en ventana propia; las canciones se agregan a la lista y se reproducen como audio.
+- **Listas**: varias listas con nombre, búsqueda, ordenar por nombre o duración, mover o copiar canciones entre listas, importar y exportar `.m3u`. Se pueden arrastrar archivos y carpetas a la ventana.
+- **Ecualizador** de 10 bandas con presets, en ventana propia.
+- **Visualizador** con cuatro modos (clic sobre el gráfico para cambiar) y colores arcoíris en toda la app.
+- **Ahora suena**: título, artista y carátula del archivo, o la miniatura del video de YouTube.
+- **Letras sincronizadas** desde [LRCLIB](https://lrclib.net), con ajuste manual de desfase por canción.
+- **Ventanas acoplables**: el ecualizador y el buscador se pegan al reproductor y se mueven con él.
+- **Modo mini** siempre visible, **ícono en la bandeja del sistema**, tema claro y oscuro, y fundido entre canciones.
+- Recuerda la posición de las ventanas, las listas, el volumen y el ecualizador.
+
+## Atajos
+
+| Tecla | Acción |
+|---|---|
+| `Espacio` | Reproducir / pausa |
+| `←` / `→` | Retroceder / adelantar 5 s |
+| `↑` / `↓` | Subir / bajar volumen |
+| Teclas multimedia | Play, siguiente, anterior y stop, aunque la app no tenga el foco |
+
+## Desarrollo
+
+Requisitos: Windows, Node.js 22 o superior.
+
+```
+npm install
+npm run dev
+```
+
+| Comando | Qué hace |
+|---|---|
+| `npm run dev` | Abre la app en modo desarrollo con recarga en vivo |
+| `npm run typecheck` | Revisa los tipos de TypeScript |
+| `npm run build` | Genera el instalador en `release\` sin publicarlo |
+| `npm run build:dir` | Genera la app sin instalador (prueba rápida) |
+
+### Publicar una versión
+
+Cada comando sube la versión en `package.json`, genera el instalador y lo publica en GitHub Releases, de donde lo toma el actualizador:
+
+```
+$env:GH_TOKEN = "tu_token"
+npm run release:patch    # correcciones     1.2.0 -> 1.2.1
+npm run release:minor    # funciones nuevas 1.2.0 -> 1.3.0
+npm run release:major    # cambios grandes  1.2.0 -> 2.0.0
+```
+
+`GH_TOKEN` es un token *fine-grained* de GitHub con acceso a este repositorio y permiso **Contents: Read and write**. Para volver a publicar la versión actual sin cambiar el número, usa `npm run publish`.
+
+## Estructura
+
+```
+electron/main/     proceso principal: ventanas, protocolo wmedia://, ffmpeg,
+                   YouTube (yt-dlp), letras, listas .m3u, actualizaciones
+electron/preload/  puente seguro entre la interfaz y el proceso principal
+src/               interfaz en React: reproductor, ecualizador y buscador
+bin/yt-dlp.exe     binario de yt-dlp incluido en el instalador
+build/             íconos de la app
+```
+
+La configuración del usuario se guarda en `%APPDATA%\winmusic\winmusic-state.json`.
+
+## Componentes de terceros
+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp): búsqueda y streams de YouTube.
+- [FFmpeg](https://ffmpeg.org), vía `ffmpeg-static` y `ffprobe-static`: conversión de formatos y lectura de etiquetas.
+- [LRCLIB](https://lrclib.net): letras sincronizadas.
+
+Reproducir contenido de YouTube fuera de su reproductor oficial va en contra de los Términos de Servicio de YouTube.
