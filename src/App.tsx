@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { TitleBar } from './components/TitleBar'
 import { Controls } from './components/Controls'
 import { SeekBar } from './components/SeekBar'
@@ -136,13 +136,18 @@ export default function App() {
     })
   }, [engine.volume, engine.muted, engine.eqGains, engine.eqPreset])
 
-  const current = useMemo(
-    () =>
-      playlist.currentIndex >= 0
-        ? playlist.tracks[playlist.currentIndex] ?? null
-        : null,
-    [playlist.tracks, playlist.currentIndex],
-  )
+  // Pista que esta sonando. Es independiente de la lista visible: al cambiar
+  // de lista sigue sonando aunque no este en la nueva.
+  const [playingTrack, setPlayingTrack] = useState<Track | null>(null)
+  const current = playingTrack
+
+  // Resalta en la lista visible la pista que suena (o nada si no esta ahi).
+  const { tracks: visibleTracks, setCurrentIndex } = playlist
+  useEffect(() => {
+    if (!playingTrack) return
+    const key = trackKey(playingTrack)
+    setCurrentIndex(visibleTracks.findIndex((t) => trackKey(t) === key))
+  }, [playingTrack, visibleTracks, library.activeId, setCurrentIndex])
 
   const isYoutube = current?.source === 'youtube' && !!current.videoId
   const position = engine.currentTime + (isYoutube ? ytOffset : 0)
@@ -261,6 +266,7 @@ export default function App() {
     ytSeekRef.current?.cleanup()
     ytSeekRef.current = null
     setYtOffset(0)
+    setPlayingTrack(null)
     media.pause()
     media.removeAttribute('src')
     media.load()
@@ -276,9 +282,11 @@ export default function App() {
     [playlist, clearMedia],
   )
 
+  // Vaciar la lista solo detiene la musica si la que suena es de esta lista.
   const handleClear = useCallback(() => {
+    const playingHere = playlist.currentIndex >= 0
     playlist.clear()
-    clearMedia()
+    if (playingHere) clearMedia()
   }, [playlist, clearMedia])
 
   // Carga y reproduce la pista solicitada. Toma la pista por indice desde un
@@ -302,6 +310,7 @@ export default function App() {
     const media = mediaRef.current
     const track = tracksRef.current[playRequest.index]
     if (!media || !track) return
+    setPlayingTrack(track)
 
     // Una pista nueva empieza desde 0 y anula cualquier salto pendiente.
     ytSeekRef.current?.cleanup()
@@ -545,22 +554,10 @@ export default function App() {
     }
   }, [showLyrics, currentId, displayTitle, displayArtist])
 
-  // --- Listas con nombre. Cambiar de lista detiene la reproduccion. ---
-  const handleSwitchList = useCallback(
-    (id: string) => {
-      library.switchTo(id)
-      clearMedia()
-    },
-    [library, clearMedia],
-  )
+  // --- Listas con nombre. La musica sigue sonando al cambiar de lista. ---
+  const handleSwitchList = useCallback((id: string) => library.switchTo(id), [library])
 
-  const handleNewList = useCallback(
-    (name: string) => {
-      library.create(name)
-      clearMedia()
-    },
-    [library, clearMedia],
-  )
+  const handleNewList = useCallback((name: string) => library.create(name), [library])
 
   const handleRenameList = useCallback(
     (name: string) => {
@@ -569,10 +566,7 @@ export default function App() {
     [library],
   )
 
-  const handleDeleteList = useCallback(() => {
-    library.removeActive()
-    clearMedia()
-  }, [library, clearMedia])
+  const handleDeleteList = useCallback(() => library.removeActive(), [library])
 
   const handleExportList = useCallback(async () => {
     try {
@@ -615,13 +609,12 @@ export default function App() {
         if (track) tracks.push(track)
       }
       library.create(result.name, tracks)
-      clearMedia()
       setNotice(`Lista importada: ${tracks.length} pistas`)
     } catch (err) {
       console.error('[winmusic] error al importar la lista:', err)
       setNotice('No se pudo importar la lista')
     }
-  }, [library, clearMedia, ytResultToTrack])
+  }, [library, ytResultToTrack])
 
   // Copiar / mover una cancion de la lista activa a otra lista.
   const listName = useCallback(
@@ -644,11 +637,12 @@ export default function App() {
       const track = playlist.tracks[index]
       if (!track) return
       // Si ya estaba en el destino, mover igual la quita de la lista actual.
+      // Si es la que suena, sigue sonando (solo cambia de lista).
       library.addToList(listId, [track])
-      handleRemove(index)
+      playlist.removeAt(index)
       setNotice(`Movida a «${listName(listId)}»`)
     },
-    [playlist.tracks, library, handleRemove, listName],
+    [playlist, library, listName],
   )
 
   // Modo mini: barra compacta siempre encima de las demas ventanas.

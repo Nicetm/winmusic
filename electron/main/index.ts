@@ -34,6 +34,19 @@ import {
   type WindowBounds,
 } from './store'
 
+// En desarrollo se usa una carpeta de datos propia: si compartiera la de la
+// app instalada, cada una sobreescribiria las listas de la otra. Tiene que ir
+// antes de loadState(), que lee de userData.
+if (!app.isPackaged) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'winmusic-dev'))
+}
+
+// Una sola instancia: dos procesos guardando el mismo archivo se pisan entre
+// si. La segunda instancia sale sin escribir nada (app.exit no dispara
+// before-quit) y la primera pasa al frente.
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) app.exit(0)
+
 const state: PersistedState = loadState()
 
 function persistWindowBounds(): void {
@@ -731,8 +744,8 @@ function registerIpc(): void {
     return collectMediaFromDir(filePaths[0])
   })
 
-  ipcMain.handle('youtube:search', async (_e, query: string) => {
-    return searchYoutube(query)
+  ipcMain.handle('youtube:search', async (_e, query: string, page: number) => {
+    return searchYoutube(query, page)
   })
 
   // --- Datos de la cancion y letras ---
@@ -791,12 +804,14 @@ function registerIpc(): void {
     playlist: state.playlist,
     audio: state.audio,
   }))
-  ipcMain.on('state:savePlaylist', (_e, playlist: PersistedState['playlist']) => {
-    state.playlist = playlist
+  // Se combina con lo guardado en vez de reemplazar: si llega un dato sin
+  // algun campo (p.ej. sin `lists`), no se pierde el valor anterior.
+  ipcMain.on('state:savePlaylist', (_e, playlist: Partial<PersistedState['playlist']>) => {
+    state.playlist = { ...state.playlist, ...playlist }
     saveState(state)
   })
-  ipcMain.on('state:saveAudio', (_e, audio: PersistedState['audio']) => {
-    state.audio = audio
+  ipcMain.on('state:saveAudio', (_e, audio: Partial<PersistedState['audio']>) => {
+    state.audio = { ...state.audio, ...audio }
     saveState(state)
   })
 
@@ -883,6 +898,14 @@ function registerMediaKeys(): void {
     if (!ok) console.warn(`[winmusic] tecla ${accelerator} ocupada por otra aplicacion`)
   }
 }
+
+// Si se intenta abrir otra instancia, se muestra la que ya estaba abierta.
+app.on('second-instance', () => {
+  if (!win || win.isDestroyed()) return
+  for (const w of [win, eqWin, searchWin]) if (w && !w.isDestroyed()) w.show()
+  if (win.isMinimized()) win.restore()
+  win.focus()
+})
 
 app.whenReady().then(() => {
   registerMediaProtocol()

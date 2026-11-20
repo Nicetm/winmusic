@@ -49,7 +49,17 @@ function storePath(): string {
   return path.join(app.getPath('userData'), 'winmusic-state.json')
 }
 
+/** Copia del estado tal como estaba al abrir la app (para poder recuperarlo). */
+function backupPath(): string {
+  return path.join(app.getPath('userData'), 'winmusic-state.backup.json')
+}
+
 export function loadState(): PersistedState {
+  try {
+    fs.copyFileSync(storePath(), backupPath())
+  } catch {
+    // Primera ejecucion: todavia no hay nada que respaldar.
+  }
   try {
     const raw = fs.readFileSync(storePath(), 'utf8')
     const parsed = JSON.parse(raw) as Partial<PersistedState>

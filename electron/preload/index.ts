@@ -87,8 +87,8 @@ const api = {
   },
 
   // --- YouTube ---
-  youtubeSearch: (query: string): Promise<YtSearchResult[]> =>
-    ipcRenderer.invoke('youtube:search', query),
+  youtubeSearch: (query: string, page = 1): Promise<YtSearchResult[]> =>
+    ipcRenderer.invoke('youtube:search', query, page),
 
   // --- Ventana de busqueda ---
   toggleSearchWindow: (): Promise<void> =>

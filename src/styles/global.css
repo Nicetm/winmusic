@@ -762,10 +762,17 @@ input.eq__slider::-webkit-slider-thumb {
   border: 1px solid var(--border);
 }
 
+/* min-height: 0 deja que la lista se encoja y haga scroll en vez de empujar
+   el paginador fuera de la ventana cuando esta es baja. */
 .searchwin .ytsearch {
   flex: 1 1 auto;
+  min-height: 0;
   max-height: none;
   border-bottom: none;
+}
+
+.searchwin .ytsearch__list {
+  min-height: 0;
 }
 
 /* --- Menu contextual --- */
@@ -1188,4 +1195,40 @@ input.eq__slider::-webkit-slider-thumb {
 .lyrics__sync-btn:hover,
 .lyrics__sync-value:hover {
   border-color: var(--accent);
+}
+
+/* --- Paginador del buscador de YouTube --- */
+.ytsearch__pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.ytsearch__page-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--btn-top), var(--btn-bottom));
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ytsearch__page-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ytsearch__page-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ytsearch__page {
+  font-size: 11px;
+  color: var(--text-dim);
 }

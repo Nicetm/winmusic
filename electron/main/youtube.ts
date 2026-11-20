@@ -69,16 +69,26 @@ interface YtFlatEntry {
   uploader?: string | null
 }
 
-/** Busca en YouTube y devuelve hasta `limit` resultados (solo metadatos). */
-export function searchYoutube(query: string, limit = 8): Promise<YtSearchResult[]> {
+export const SEARCH_PAGE_SIZE = 10
+
+/**
+ * Busca en YouTube y devuelve una pagina de resultados (solo metadatos).
+ * ytsearch no admite desplazamiento: se piden los primeros page*N y
+ * --playlist-items deja solo los de esa pagina.
+ */
+export function searchYoutube(query: string, page = 1): Promise<YtSearchResult[]> {
   return new Promise((resolve, reject) => {
     const bin = ytdlpPath()
+    const p = Math.max(1, Math.floor(page))
+    const end = p * SEARCH_PAGE_SIZE
+    const start = end - SEARCH_PAGE_SIZE + 1
     const args = [
-      `ytsearch${limit}:${query}`,
+      `ytsearch${end}:${query}`,
+      '--playlist-items',
+      `${start}:${end}`,
       '--dump-json',
       '--flat-playlist',
       '--no-warnings',
-      '--no-playlist',
     ]
     execFile(
       bin,
