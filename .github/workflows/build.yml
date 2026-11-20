@@ -1,0 +1,39 @@
+# Compila el instalador de Windows desde el codigo del repositorio.
+# Es la base que exige SignPath para firmar: el binario debe salir de una
+# compilacion automatica y verificable. El paso de firma se agrega cuando
+# SignPath apruebe el proyecto (organizacion, proyecto y politica de firma).
+name: build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Compilar instalador
+        run: npm run build
+
+      - name: Subir instalador sin firmar
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmusic-windows-unsigned
+          path: |
+            release/winMusic-Setup-*.exe
+            release/winMusic-Setup-*.exe.blockmap
+            release/latest.yml
+          if-no-files-found: error

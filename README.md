@@ -83,3 +83,30 @@ La configuración del usuario se guarda en `%APPDATA%\winmusic\winmusic-state.js
 - [LRCLIB](https://lrclib.net): letras sincronizadas.
 
 Reproducir contenido de YouTube fuera de su reproductor oficial va en contra de los Términos de Servicio de YouTube.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org) (solicitud en trámite; las versiones publicadas hasta ahora no están firmadas).
+
+- Committers and reviewers: [Nicetm](https://github.com/Nicetm)
+- Approvers: [Nicetm](https://github.com/Nicetm)
+
+Los instaladores se compilan desde este repositorio con GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)).
+
+## Privacy policy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it, with these exceptions:
+
+- **Actualizaciones:** al iniciar, la app consulta [GitHub Releases](https://github.com/Nicetm/winmusic/releases) de este repositorio para saber si hay una versión nueva, y actualiza yt-dlp desde [su repositorio en GitHub](https://github.com/yt-dlp/yt-dlp). Solo se descargan archivos; no se envían datos del usuario.
+
+Funciones que se conectan a internet solo cuando el usuario las usa:
+
+- **Búsqueda y reproducción de YouTube:** envía el texto buscado y pide el audio a YouTube. Aplica la [política de privacidad de Google](https://policies.google.com/privacy).
+- **Letras:** envía a [LRCLIB](https://lrclib.net) el título, el artista y la duración de la canción que suena.
+- **Carátulas de YouTube:** descarga la miniatura del video desde los servidores de YouTube.
+
+Las listas, el ecualizador y la configuración se guardan solo en el equipo (`%APPDATA%\winmusic`).
+
+## Licencia
+
+[MIT](LICENSE). Los componentes de terceros (yt-dlp, FFmpeg) mantienen sus propias licencias.
