@@ -32,6 +32,8 @@ interface Props {
   onExportList: () => void
   onCopyToList: (index: number, listId: string) => void
   onMoveToList: (index: number, listId: string) => void
+  onExportBackup: () => void
+  onImportBackup: () => void
 }
 
 interface MenuState {
@@ -67,6 +69,8 @@ export function Playlist({
   onExportList,
   onCopyToList,
   onMoveToList,
+  onExportBackup,
+  onImportBackup,
 }: Props) {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [dialog, setDialog] = useState<DialogState | null>(null)
@@ -138,6 +142,8 @@ export function Playlist({
       { label: 'Ordenar por duración', onClick: () => onSort('duration'), disabled: tracks.length < 2 },
       { label: 'Importar .m3u…', onClick: onImportList, separatorBefore: true },
       { label: 'Exportar .m3u…', onClick: onExportList, disabled: tracks.length === 0 },
+      { label: 'Exportar respaldo completo…', onClick: onExportBackup, separatorBefore: true },
+      { label: 'Importar respaldo completo…', onClick: onImportBackup },
     ]
     setMenu({ x: rect.left, y: rect.bottom + 2, items })
   }

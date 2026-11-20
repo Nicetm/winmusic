@@ -52,6 +52,11 @@ const api = {
   savePlaylist: (playlist: PlaylistSave): void =>
     ipcRenderer.send('state:savePlaylist', playlist),
 
+  // --- Respaldo completo ---
+  exportBackup: (): Promise<boolean> => ipcRenderer.invoke('backup:export'),
+  importBackup: (): Promise<'imported' | 'canceled' | 'invalid'> =>
+    ipcRenderer.invoke('backup:import'),
+
   // --- Listas .m3u ---
   exportPlaylist: (name: string, tracks: M3uTrack[]): Promise<boolean> =>
     ipcRenderer.invoke('playlist:export', name, tracks),

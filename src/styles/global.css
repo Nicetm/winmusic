@@ -611,26 +611,36 @@ input.eq__slider::-webkit-slider-thumb {
   border: 1px solid var(--border);
 }
 
+/*
+ * Las barras ocupan el alto que sobra de la ventana. Cada nivel lleva
+ * min-height: 0 para poder encogerse (si no, al achicar la ventana el
+ * contenido se desbordaba y las barras quedaban cortadas o fuera de vista),
+ * y el slider usa flex-basis 0 + height 0 para tomar el alto del espacio
+ * libre y no su tamano propio.
+ */
 .eqwin .eq {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   border-bottom: none;
 }
 
 .eqwin .eq__bands {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  min-height: 0;
   align-items: stretch;
 }
 
 .eqwin .eq__band {
+  min-height: 0;
   justify-content: space-between;
 }
 
-.eqwin .eq__slider {
-  flex: 1 1 auto;
-  height: auto;
-  min-height: 90px;
+.eqwin input.eq__slider {
+  flex: 1 1 0;
+  height: 0;
+  min-height: 40px;
 }
 
 /* --- Buscador de YouTube --- */

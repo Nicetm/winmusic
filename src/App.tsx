@@ -616,6 +616,27 @@ export default function App() {
     }
   }, [library, ytResultToTrack])
 
+  // Respaldo completo (todas las listas, ecualizador y volumen) en un archivo.
+  const handleExportBackup = useCallback(async () => {
+    try {
+      if (await window.winmusic.exportBackup()) setNotice('Respaldo exportado')
+    } catch (err) {
+      console.error('[winmusic] error al exportar el respaldo:', err)
+      setNotice('No se pudo exportar el respaldo')
+    }
+  }, [])
+
+  // Si se importa, el main recarga la ventana con los datos nuevos.
+  const handleImportBackup = useCallback(async () => {
+    try {
+      const result = await window.winmusic.importBackup()
+      if (result === 'invalid') setNotice('El archivo no es un respaldo de winMusic')
+    } catch (err) {
+      console.error('[winmusic] error al importar el respaldo:', err)
+      setNotice('No se pudo importar el respaldo')
+    }
+  }, [])
+
   // Copiar / mover una cancion de la lista activa a otra lista.
   const listName = useCallback(
     (id: string) => library.lists.find((l) => l.id === id)?.name ?? '',
@@ -840,6 +861,8 @@ export default function App() {
         onExportList={handleExportList}
         onCopyToList={handleCopyToList}
         onMoveToList={handleMoveToList}
+        onExportBackup={handleExportBackup}
+        onImportBackup={handleImportBackup}
       />
 
       {dragging && (

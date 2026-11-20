@@ -542,7 +542,8 @@ const eqConfig: SecondaryConfig = {
   width: EQ_WIDTH,
   height: EQ_HEIGHT,
   minWidth: 300,
-  minHeight: 170,
+  // Minimo para que entren titulo, preset, valores, frecuencias y barras de 40px.
+  minHeight: 190,
   hash: 'eq',
   onClosed: () => win?.webContents.send('eq:windowClosed'),
 }
@@ -769,6 +770,69 @@ function registerIpc(): void {
   // --- Datos de la cancion y letras ---
   ipcMain.handle('media:tags', (_e, filePath: string) => readTags(filePath))
   ipcMain.handle('lyrics:get', (_e, query: LyricsQuery) => fetchLyrics(query))
+
+  // --- Respaldo completo: listas, ecualizador y volumen (sin ventanas, que
+  // dependen de cada pantalla) ---
+  ipcMain.handle('backup:export', async () => {
+    if (!win) return false
+    const date = new Date().toISOString().slice(0, 10)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: 'Exportar respaldo',
+      defaultPath: `winmusic-respaldo-${date}.json`,
+      filters: [{ name: 'Respaldo de winMusic', extensions: ['json'] }],
+    })
+    if (canceled || !filePath) return false
+    const backup = {
+      app: 'winmusic',
+      version: app.getVersion(),
+      createdAt: new Date().toISOString(),
+      playlist: state.playlist,
+      audio: state.audio,
+    }
+    await fs.writeFile(filePath, JSON.stringify(backup, null, 2), 'utf8')
+    return true
+  })
+
+  ipcMain.handle('backup:import', async (): Promise<'imported' | 'canceled' | 'invalid'> => {
+    if (!win) return 'canceled'
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: 'Importar respaldo',
+      properties: ['openFile'],
+      filters: [{ name: 'Respaldo de winMusic', extensions: ['json'] }],
+    })
+    if (canceled || filePaths.length === 0) return 'canceled'
+
+    let data: Partial<PersistedState> & { app?: string }
+    try {
+      data = JSON.parse(await fs.readFile(filePaths[0], 'utf8'))
+    } catch {
+      return 'invalid'
+    }
+    const playlist = data.playlist
+    if (data.app !== 'winmusic' || !playlist || !Array.isArray(playlist.lists) || !Array.isArray(playlist.tracks)) {
+      return 'invalid'
+    }
+
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning',
+      title: 'Importar respaldo',
+      message: 'Se reemplazaran todas tus listas, el ecualizador y el volumen.',
+      detail: `El respaldo tiene ${playlist.lists.length} lista(s). Esta accion no se puede deshacer.`,
+      buttons: ['Importar', 'Cancelar'],
+      defaultId: 1,
+      cancelId: 1,
+    })
+    if (response !== 0) return 'canceled'
+
+    state.playlist = { ...state.playlist, ...playlist, currentIndex: -1 }
+    if (data.audio) state.audio = { ...state.audio, ...data.audio }
+    saveState(state)
+    flushState()
+    // Recarga las ventanas para que tomen los datos importados.
+    win.webContents.reload()
+    if (eqWin && !eqWin.isDestroyed()) eqWin.webContents.reload()
+    return 'imported'
+  })
 
   // --- Listas .m3u ---
   ipcMain.handle('playlist:export', async (_e, name: string, tracks: M3uTrack[]) => {
