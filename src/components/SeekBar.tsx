@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { formatTime } from '../utils/format'
+import { useT } from '../i18n'
 
 interface Props {
   currentTime: number
@@ -12,6 +13,7 @@ interface Props {
  * soltar. En YouTube cada salto reinicia el stream, asi se hace uno solo.
  */
 export function SeekBar({ currentTime, duration, onSeek }: Props) {
+  const { t } = useT()
   const [dragValue, setDragValue] = useState<number | null>(null)
   const max = duration > 0 ? duration : 0
   const shown = dragValue ?? currentTime
@@ -37,7 +39,7 @@ export function SeekBar({ currentTime, duration, onSeek }: Props) {
         onPointerUp={commit}
         onKeyUp={commit}
         onBlur={commit}
-        aria-label="Posicion de reproduccion"
+        aria-label={t('ctl.position')}
       />
       <span className="seekbar__time">{formatTime(duration)}</span>
     </div>

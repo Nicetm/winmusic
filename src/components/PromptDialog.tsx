@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useT } from '../i18n'
 
 interface Props {
   title: string
@@ -10,6 +11,7 @@ interface Props {
 
 /** Pide un texto (nombre de lista). window.prompt no existe en Electron. */
 export function PromptDialog({ title, initialValue = '', confirmLabel, onConfirm, onCancel }: Props) {
+  const { t } = useT()
   const [value, setValue] = useState(initialValue)
   const trimmed = value.trim()
 
@@ -34,7 +36,7 @@ export function PromptDialog({ title, initialValue = '', confirmLabel, onConfirm
         />
         <div className="dialog__actions">
           <button className="dialog__btn" onClick={onCancel}>
-            Cancelar
+            {t('dlg.cancel')}
           </button>
           <button className="dialog__btn" onClick={submit} disabled={!trimmed}>
             {confirmLabel}

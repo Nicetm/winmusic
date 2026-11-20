@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Equalizer } from './components/Equalizer'
-import { Icon } from './components/Icon'
+import { Equalizer, CUSTOM_PRESET } from './components/Equalizer'
+import { TitleBar } from './components/TitleBar'
 import { flatGains, type EqGains } from './audio/equalizer'
 import { useRainbowAccent } from './hooks/useRainbowAccent'
+import { useSharedTheme } from './hooks/useSharedTheme'
+import { useT } from './i18n'
 
 /**
  * Ventana independiente del ecualizador. No posee el grafo de audio: emite las
@@ -11,22 +13,11 @@ import { useRainbowAccent } from './hooks/useRainbowAccent'
  */
 export default function EqWindow() {
   useRainbowAccent()
+  useSharedTheme()
+  const { t } = useT()
   const [gains, setGains] = useState<EqGains>(() => flatGains())
   const [preset, setPreset] = useState('Plano')
-
-  // Aplica el tema guardado y reacciona a cambios desde la ventana principal.
-  useEffect(() => {
-    const apply = () => {
-      const theme = localStorage.getItem('wm-theme') || 'dark'
-      document.documentElement.setAttribute('data-theme', theme)
-    }
-    apply()
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'wm-theme') apply()
-    }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, [])
+  const [customPresets, setCustomPresets] = useState<Record<string, EqGains>>({})
 
   useEffect(() => {
     const off = window.winmusic.onEqState((state) => {
@@ -34,6 +25,7 @@ export default function EqWindow() {
       setPreset(state.preset)
     })
     void window.winmusic.eqRequestState()
+    void window.winmusic.eqGetCustomPresets().then(setCustomPresets)
     return off
   }, [])
 
@@ -43,7 +35,7 @@ export default function EqWindow() {
       next[index] = gainDb
       return next
     })
-    setPreset('Personalizado')
+    setPreset(CUSTOM_PRESET)
     window.winmusic.eqSetBand(index, gainDb)
   }
 
@@ -53,38 +45,29 @@ export default function EqWindow() {
     window.winmusic.eqSetPreset(name, values)
   }
 
+  const handleSavePreset = async (name: string) => {
+    setCustomPresets(await window.winmusic.eqSaveCustomPreset(name, gains))
+    handlePreset(name, gains)
+  }
+
+  const handleDeletePreset = async (name: string) => {
+    setCustomPresets(await window.winmusic.eqDeleteCustomPreset(name))
+    // Las ganancias quedan igual, pero ya no corresponden a un preset.
+    setPreset(CUSTOM_PRESET)
+    window.winmusic.eqSetPreset(CUSTOM_PRESET, gains)
+  }
+
   return (
     <div className="eqwin">
-      <div className="titlebar">
-        <div className="titlebar__drag">
-          <span className="titlebar__logo">EQ</span>
-          <span className="titlebar__track">Ecualizador</span>
-        </div>
-        <div className="titlebar__controls">
-          <button
-            className="titlebar__btn"
-            onClick={() => window.winmusic.minimize()}
-            aria-label="Minimizar"
-            title="Minimizar"
-          >
-            <Icon name="minimize" size={16} />
-          </button>
-          <button
-            className="titlebar__btn titlebar__btn--close"
-            onClick={() => window.winmusic.close()}
-            aria-label="Cerrar"
-            title="Cerrar"
-          >
-            <Icon name="close" size={14} />
-          </button>
-        </div>
-      </div>
-
+      <TitleBar logo="EQ" title={t('win.eqTitle')} canMaximize={false} />
       <Equalizer
         gains={gains}
         preset={preset}
+        customPresets={customPresets}
         onBandChange={handleBand}
         onApplyPreset={handlePreset}
+        onSavePreset={(name) => void handleSavePreset(name)}
+        onDeletePreset={(name) => void handleDeletePreset(name)}
       />
     </div>
   )

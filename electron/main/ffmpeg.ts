@@ -28,6 +28,8 @@ export interface ProbeResult {
   audioCodec: string | null
   formatName: string
   nativePlayable: boolean
+  /** Duracion en segundos (el stream convertido no la informa). */
+  duration: number | null
 }
 
 interface FfprobeStream {
@@ -39,7 +41,7 @@ interface FfprobeStream {
 
 interface FfprobeOutput {
   streams?: FfprobeStream[]
-  format?: { format_name?: string; tags?: Record<string, string> }
+  format?: { format_name?: string; duration?: string; tags?: Record<string, string> }
 }
 
 /** La caratula de un MP3/M4A llega como "video" con disposition attached_pic. */
@@ -101,11 +103,13 @@ export async function probeMedia(filePath: string): Promise<ProbeResult> {
     formatName === 'wav' ||
     containerOk
 
+  const duration = Number(data.format?.duration)
   return {
     videoCodec,
     audioCodec,
     formatName,
     nativePlayable: safeContainer && videoOk && audioOk,
+    duration: Number.isFinite(duration) && duration > 0 ? duration : null,
   }
 }
 
@@ -114,7 +118,7 @@ export async function probeMedia(filePath: string): Promise<ProbeResult> {
  * streaming progresivo en un elemento <video>. Si el codec de video ya es
  * nativo hace copy; si no, recodifica.
  */
-export function transcodeToStream(filePath: string, probe: ProbeResult) {
+export function transcodeToStream(filePath: string, probe: ProbeResult, startSeconds = 0) {
   const videoArgs =
     probe.videoCodec && NATIVE_VIDEO_CODECS.has(probe.videoCodec)
       ? ['-c:v', 'copy']
@@ -124,7 +128,10 @@ export function transcodeToStream(filePath: string, probe: ProbeResult) {
       ? ['-c:a', 'copy']
       : ['-c:a', 'aac', '-b:a', '192k']
 
+  // -ss antes de -i salta rapido al punto pedido (para adelantar).
+  const seekArgs = startSeconds > 0 ? ['-ss', startSeconds.toFixed(2)] : []
   const args = [
+    ...seekArgs,
     '-i', filePath,
     ...videoArgs,
     ...audioArgs,
@@ -183,6 +190,31 @@ export function extractCover(filePath: string): Promise<Buffer | null> {
       resolve(code === 0 && buf.length > 0 ? buf : null)
     })
   })
+}
+
+/**
+ * Convierte un stream remoto con video (YouTube) a WebM VP8 + Opus por stdout.
+ * WebM se reproduce de forma fiable en streaming progresivo en Chromium; el
+ * modo realtime de libvpx va muy por delante del tiempo real a 360p.
+ */
+export function extractVideoFromUrl(url: string, startSeconds = 0) {
+  const seekArgs = startSeconds > 0 ? ['-ss', startSeconds.toFixed(2)] : []
+  const args = [
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    ...seekArgs,
+    '-i', url,
+    '-c:v', 'libvpx',
+    '-deadline', 'realtime',
+    '-cpu-used', '8',
+    '-b:v', '1200k',
+    '-c:a', 'libopus',
+    '-b:a', '128k',
+    '-f', 'webm',
+    'pipe:1',
+  ]
+  return spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 /**

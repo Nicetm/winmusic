@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useT } from '../i18n'
 
 export type LyricsState =
   | { status: 'loading' }
@@ -43,6 +44,7 @@ function readOffset(key: string): number {
 }
 
 export function LyricsView({ state, getTime, offsetKey }: Props) {
+  const { t } = useT()
   const lines = useMemo(
     () => (state.status === 'ready' && state.synced ? parseLrc(state.synced) : []),
     [state],
@@ -77,14 +79,14 @@ export function LyricsView({ state, getTime, offsetKey }: Props) {
   }, [lines, getTime, offset])
 
   if (state.status === 'loading') {
-    return <div className="lyrics lyrics--msg">Buscando letra…</div>
+    return <div className="lyrics lyrics--msg">{t('lyr.loading')}</div>
   }
   if (state.status === 'error') {
-    return <div className="lyrics lyrics--msg">No se pudo buscar la letra.</div>
+    return <div className="lyrics lyrics--msg">{t('lyr.error')}</div>
   }
   if (lines.length === 0) {
     if (state.plain) return <div className="lyrics lyrics--plain">{state.plain}</div>
-    return <div className="lyrics lyrics--msg">Sin letra disponible.</div>
+    return <div className="lyrics lyrics--msg">{t('lyr.none')}</div>
   }
 
   const from = Math.max(0, active - VISIBLE_AROUND)
@@ -105,21 +107,21 @@ export function LyricsView({ state, getTime, offsetKey }: Props) {
         <button
           className="lyrics__sync-btn"
           onClick={() => changeOffset(offset - OFFSET_STEP)}
-          title="La letra aparece antes"
+          title={t('lyr.earlier')}
         >
           −0,5 s
         </button>
         <button
           className="lyrics__sync-value"
           onClick={() => changeOffset(0)}
-          title="Ajuste de sincronizacion de esta cancion (clic para reiniciar)"
+          title={t('lyr.offset')}
         >
           {offsetLabel}
         </button>
         <button
           className="lyrics__sync-btn"
           onClick={() => changeOffset(offset + OFFSET_STEP)}
-          title="La letra aparece despues"
+          title={t('lyr.later')}
         >
           +0,5 s
         </button>

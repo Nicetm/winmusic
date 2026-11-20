@@ -1,4 +1,5 @@
 import { Icon } from './Icon'
+import { useT } from '../i18n'
 
 interface Props {
   volume: number
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export function VolumeControl({ volume, muted, onVolume, onToggleMute }: Props) {
+  const { t } = useT()
   const icon =
     muted || volume === 0 ? 'volumeMute' : volume < 0.5 ? 'volumeLow' : 'volumeHigh'
   return (
@@ -15,8 +17,8 @@ export function VolumeControl({ volume, muted, onVolume, onToggleMute }: Props) 
       <button
         className="volume__btn"
         onClick={onToggleMute}
-        aria-label="Silenciar"
-        title="Silenciar"
+        aria-label={t('ctl.mute')}
+        title={t('ctl.mute')}
       >
         <Icon name={icon} size={18} />
       </button>
@@ -28,7 +30,7 @@ export function VolumeControl({ volume, muted, onVolume, onToggleMute }: Props) 
         step={0.01}
         value={muted ? 0 : volume}
         onChange={(e) => onVolume(Number(e.target.value))}
-        aria-label="Volumen"
+        aria-label={t('ctl.volume')}
       />
     </div>
   )

@@ -3,14 +3,35 @@ import type { YtSearchResult } from '../main/youtube'
 import type { MediaTags } from '../main/ffmpeg'
 import type { LyricsQuery, LyricsResult } from '../main/lyrics'
 import type { M3uEntry, M3uTrack } from '../main/m3u'
+import type { SubtitleCue } from '../main/subtitles'
 
-export type { YtSearchResult, MediaTags, LyricsResult, M3uEntry, M3uTrack }
+export type { YtSearchResult, MediaTags, LyricsResult, M3uEntry, M3uTrack, SubtitleCue }
+
+/** Si un archivo local se reproduce tal cual o convertido por ffmpeg. */
+export interface MediaProbe {
+  nativePlayable: boolean
+  duration: number | null
+}
 
 /** Lista guardada con nombre. */
 export interface SavedList {
   id: string
   name: string
   tracks: unknown[]
+}
+
+export interface AudioSave {
+  volume: number
+  muted: boolean
+  eqGains: number[]
+  eqPreset: string
+  playbackRate: number
+}
+
+/** Punto donde quedo la reproduccion, para seguir al volver a abrir. */
+export interface ResumeSave {
+  key: string
+  position: number
 }
 
 export interface PlaylistSave {
@@ -20,6 +41,7 @@ export interface PlaylistSave {
   repeat: string
   lists: SavedList[]
   activeId: string | null
+  resume?: ResumeSave | null
 }
 
 /** Comandos de las teclas multimedia enviados desde el main. */
@@ -47,7 +69,7 @@ const api = {
   // --- Persistencia ---
   loadState: (): Promise<{
     playlist: PlaylistSave
-    audio: { volume: number; muted: boolean; eqGains: number[]; eqPreset: string }
+    audio: AudioSave
   }> => ipcRenderer.invoke('state:load'),
   savePlaylist: (playlist: PlaylistSave): void =>
     ipcRenderer.send('state:savePlaylist', playlist),
@@ -65,17 +87,36 @@ const api = {
 
   // --- Datos de la cancion y letras ---
   getTags: (filePath: string): Promise<MediaTags> => ipcRenderer.invoke('media:tags', filePath),
+  probeMedia: (filePath: string): Promise<MediaProbe> => ipcRenderer.invoke('media:probe', filePath),
+
+  // --- Subtitulos ---
+  findSubtitles: (videoPath: string): Promise<SubtitleCue[] | null> =>
+    ipcRenderer.invoke('subtitles:find', videoPath),
+  openSubtitles: (): Promise<SubtitleCue[] | null> => ipcRenderer.invoke('subtitles:open'),
+
+  // --- Idioma y archivos abiertos desde el Explorador ---
+  setLanguage: (lang: 'es' | 'en'): void => ipcRenderer.send('app:setLanguage', lang),
+  takeLaunchFiles: (): Promise<string[]> => ipcRenderer.invoke('app:takeLaunchFiles'),
+  onOpenFiles: (cb: (paths: string[]) => void): (() => void) => {
+    const handler = (_e: unknown, paths: string[]) => cb(paths)
+    ipcRenderer.on('app:openFiles', handler)
+    return () => ipcRenderer.removeListener('app:openFiles', handler)
+  },
+  saveResume: (resume: ResumeSave | null): void => ipcRenderer.send('state:saveResume', resume),
   getLyrics: (query: LyricsQuery): Promise<LyricsResult> =>
     ipcRenderer.invoke('lyrics:get', query),
 
   // --- Modo mini ---
   setMini: (mini: boolean): Promise<void> => ipcRenderer.invoke('window:setMini', mini),
-  saveAudio: (audio: {
-    volume: number
-    muted: boolean
-    eqGains: number[]
-    eqPreset: string
-  }): void => ipcRenderer.send('state:saveAudio', audio),
+  saveAudio: (audio: AudioSave): void => ipcRenderer.send('state:saveAudio', audio),
+
+  // --- Presets propios del ecualizador ---
+  eqGetCustomPresets: (): Promise<Record<string, number[]>> =>
+    ipcRenderer.invoke('eq:getCustomPresets'),
+  eqSaveCustomPreset: (name: string, gains: number[]): Promise<Record<string, number[]>> =>
+    ipcRenderer.invoke('eq:saveCustomPreset', name, gains),
+  eqDeleteCustomPreset: (name: string): Promise<Record<string, number[]>> =>
+    ipcRenderer.invoke('eq:deleteCustomPreset', name),
 
   // --- Acerca de ---
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('app:openExternal', url),
@@ -109,10 +150,11 @@ const api = {
     ipcRenderer.invoke('search:toggleWindow'),
   getWindowsOpenState: (): Promise<{ eq: boolean; search: boolean }> =>
     ipcRenderer.invoke('windows:getOpenState'),
-  searchAdd: (result: YtSearchResult): void =>
-    ipcRenderer.send('search:add', result),
-  onSearchAddResult: (cb: (result: YtSearchResult) => void): (() => void) => {
-    const handler = (_e: unknown, r: YtSearchResult) => cb(r)
+  searchAdd: (result: YtSearchResult, asVideo: boolean): void =>
+    ipcRenderer.send('search:add', { result, asVideo }),
+  onSearchAddResult: (cb: (result: YtSearchResult, asVideo: boolean) => void): (() => void) => {
+    const handler = (_e: unknown, p: { result: YtSearchResult; asVideo: boolean }) =>
+      cb(p.result, !!p.asVideo)
     ipcRenderer.on('search:addResult', handler)
     return () => ipcRenderer.removeListener('search:addResult', handler)
   },

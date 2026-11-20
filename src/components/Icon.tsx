@@ -30,6 +30,11 @@ export type IconName =
   | 'lyrics'
   | 'mini'
   | 'help'
+  | 'save'
+  | 'trash'
+  | 'subtitles'
+  | 'timer'
+  | 'speed'
 
 interface Props {
   name: IconName
@@ -109,6 +114,30 @@ const PATHS: Record<IconName, React.ReactNode> = {
   ),
   mini: (
     <path d="M3 5h18v14H3V5zm2 2v10h14V7H5zm2 6h10v2H7v-2z" />
+  ),
+  save: (
+    <path d="M5 3h11l3 3v13a2 2 0 01-2 2H7a2 2 0 01-2-2V3zm2 2v4h8V5H7zm5 7a3 3 0 100 6 3 3 0 000-6z" />
+  ),
+  trash: (
+    <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h-2v-8h2z" />
+  ),
+  subtitles: (
+    <path
+      fillRule="evenodd"
+      d="M3 5h18v14H3V5zm2 2v10h14V7H5zm2 5h4v2H7v-2zm6 0h4v2h-4v-2zm-6-3h10v2H7V9z"
+    />
+  ),
+  timer: (
+    <path
+      fillRule="evenodd"
+      d="M9 1h6v2H9V1zm3 3a9 9 0 110 18 9 9 0 010-18zm0 2a7 7 0 100 14 7 7 0 000-14zm-1 2h2v5.4l3.3 2-1 1.7L11 14.6V8z"
+    />
+  ),
+  speed: (
+    <path
+      fillRule="evenodd"
+      d="M12 4a10 10 0 018.7 15H3.3A10 10 0 0112 4zm0 2a8 8 0 00-7.4 11h14.8A8 8 0 0012 6zm4.2 2.4l1.4 1.4-4.2 4.3a1.8 1.8 0 11-1.4-1.4l4.2-4.3z"
+    />
   ),
   help: (
     <path

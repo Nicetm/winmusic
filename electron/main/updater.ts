@@ -1,5 +1,6 @@
 import { app, dialog, type BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { tr } from './i18n'
 
 type Notify = (message: string) => void
 
@@ -22,17 +23,17 @@ export function initUpdater(options: { notify: Notify; getWindow: () => BrowserW
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on('update-available', (info) => {
-    notify(`Descargando version ${info.version}…`)
+    notify(tr('upd.downloading', { v: info.version }))
   })
 
   autoUpdater.on('update-not-available', () => {
-    if (manualCheck) notify('Ya tienes la ultima version')
+    if (manualCheck) notify(tr('upd.latest'))
     manualCheck = false
   })
 
   autoUpdater.on('error', (err) => {
     console.error('[updater]', err)
-    if (manualCheck) notify('No se pudo buscar actualizaciones')
+    if (manualCheck) notify(tr('upd.failed'))
     manualCheck = false
   })
 
@@ -41,10 +42,10 @@ export function initUpdater(options: { notify: Notify; getWindow: () => BrowserW
     const win = getWindow()
     const box = {
       type: 'info' as const,
-      title: 'Actualizacion lista',
-      message: `winMusic ${info.version} esta lista para instalar.`,
-      detail: 'Se instalara al reiniciar. Si eliges "Mas tarde", se instalara al cerrar la app.',
-      buttons: ['Reiniciar ahora', 'Mas tarde'],
+      title: tr('upd.readyTitle'),
+      message: tr('upd.readyMessage', { v: info.version }),
+      detail: tr('upd.readyDetail'),
+      buttons: [tr('upd.restart'), tr('upd.later')],
       defaultId: 0,
       cancelId: 1,
     }
@@ -58,10 +59,10 @@ export function initUpdater(options: { notify: Notify; getWindow: () => BrowserW
 /** Busqueda manual (menu de la bandeja). */
 export function checkForUpdatesManually(): void {
   if (!app.isPackaged) {
-    notify('Las actualizaciones solo funcionan en la app instalada')
+    notify(tr('upd.devOnly'))
     return
   }
   manualCheck = true
-  notify('Buscando actualizaciones…')
+  notify(tr('upd.checking'))
   void autoUpdater.checkForUpdates().catch(() => undefined)
 }

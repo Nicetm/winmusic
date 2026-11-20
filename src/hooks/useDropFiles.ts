@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+/** true si lo que se arrastra son archivos del sistema (no un item interno). */
+function isFileDrag(e: DragEvent): boolean {
+  return !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')
+}
+
 /**
  * Habilita arrastrar y soltar archivos o carpetas sobre la ventana.
  * Previene en fase de captura el comportamiento por defecto del navegador
@@ -12,6 +17,9 @@ export function useDropFiles(onPaths: (paths: string[]) => void) {
 
   const onDrop = useCallback(
     async (e: DragEvent) => {
+      // Arrastres internos (reordenar la lista) no traen archivos: se dejan
+      // pasar para que los maneje la lista.
+      if (!isFileDrag(e)) return
       e.preventDefault()
       e.stopPropagation()
       depthRef.current = 0
@@ -32,15 +40,18 @@ export function useDropFiles(onPaths: (paths: string[]) => void) {
 
   useEffect(() => {
     const onDragEnter = (e: DragEvent) => {
+      if (!isFileDrag(e)) return
       e.preventDefault()
       depthRef.current += 1
       setDragging(true)
     }
     const onDragOver = (e: DragEvent) => {
+      if (!isFileDrag(e)) return
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
     const onDragLeave = (e: DragEvent) => {
+      if (!isFileDrag(e)) return
       e.preventDefault()
       depthRef.current = Math.max(0, depthRef.current - 1)
       if (depthRef.current === 0) setDragging(false)

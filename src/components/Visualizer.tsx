@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { rainbowHue } from '../hooks/useRainbowAccent'
+import { useT } from '../i18n'
 
 interface Props {
   frequencies: Uint8Array<ArrayBuffer>
@@ -17,6 +18,7 @@ function readVar(name: string, fallback: string): string {
 }
 
 export function Visualizer({ frequencies, playing }: Props) {
+  const { t } = useT()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [mode, setMode] = useState<Mode>(() => {
     const saved = localStorage.getItem('wm-vis-mode')
@@ -149,7 +151,7 @@ export function Visualizer({ frequencies, playing }: Props) {
       ref={canvasRef}
       className="visualizer"
       onClick={cycleMode}
-      title="Clic para cambiar la forma del visualizador"
+      title={t('stage.visualizerHint')}
     />
   )
 }

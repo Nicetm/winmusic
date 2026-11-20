@@ -10,6 +10,8 @@ export interface WindowBounds {
 }
 
 export interface PersistedState {
+  /** Idioma de la interfaz (lo usan la bandeja y los dialogos nativos). */
+  language: 'es' | 'en'
   windows: {
     main?: WindowBounds
     eq?: WindowBounds & { open: boolean }
@@ -23,16 +25,23 @@ export interface PersistedState {
     /** Listas guardadas con nombre; `tracks` es la copia de la activa. */
     lists: { id: string; name: string; tracks: unknown[] }[]
     activeId: string | null
+    /** Cancion (por clave) y segundo donde quedo, para seguir al reabrir. */
+    resume: { key: string; position: number } | null
   }
   audio: {
     volume: number
     muted: boolean
     eqGains: number[]
     eqPreset: string
+    /** Presets del ecualizador guardados por el usuario: nombre -> ganancias. */
+    customPresets: Record<string, number[]>
+    /** Velocidad de reproduccion (1 = normal). */
+    playbackRate: number
   }
 }
 
 const EMPTY: PersistedState = {
+  language: 'es',
   windows: {},
   playlist: {
     tracks: [],
@@ -41,8 +50,16 @@ const EMPTY: PersistedState = {
     repeat: 'off',
     lists: [],
     activeId: null,
+    resume: null,
   },
-  audio: { volume: 1, muted: false, eqGains: [], eqPreset: 'Plano' },
+  audio: {
+    volume: 1,
+    muted: false,
+    eqGains: [],
+    eqPreset: 'Plano',
+    customPresets: {},
+    playbackRate: 1,
+  },
 }
 
 function storePath(): string {
@@ -64,6 +81,7 @@ export function loadState(): PersistedState {
     const raw = fs.readFileSync(storePath(), 'utf8')
     const parsed = JSON.parse(raw) as Partial<PersistedState>
     return {
+      language: parsed.language === 'en' ? 'en' : 'es',
       windows: parsed.windows ?? {},
       playlist: { ...EMPTY.playlist, ...parsed.playlist },
       audio: { ...EMPTY.audio, ...parsed.audio },

@@ -18,9 +18,13 @@ export interface PlaylistSnapshot {
 
 export type SortKey = 'name' | 'duration'
 
-/** Identidad de una pista para evitar duplicados. */
+/**
+ * Identidad de una pista para evitar duplicados. Un video de YouTube puede
+ * estar dos veces: como audio y como video.
+ */
 export function trackKey(track: Track): string {
-  return track.source === 'youtube' ? `yt:${track.videoId}` : `file:${track.path}`
+  if (track.source !== 'youtube') return `file:${track.path}`
+  return track.kind === 'video' ? `ytv:${track.videoId}` : `yt:${track.videoId}`
 }
 
 export function usePlaylist() {
@@ -36,9 +40,9 @@ export function usePlaylist() {
     setRepeat(snap.repeat)
   }, [])
 
-  const addPaths = useCallback(async (paths: string[]) => {
-    if (paths.length === 0) return
-    const newTracks = await buildTracks(paths)
+  /** Agrega pistas al final, sin duplicar las que ya estan. */
+  const appendTracks = useCallback((newTracks: Track[]) => {
+    if (newTracks.length === 0) return
     setTracks((prev) => {
       const existing = new Set(prev.map(trackKey))
       const unique = newTracks.filter((t) => {
@@ -51,6 +55,14 @@ export function usePlaylist() {
     })
     setCurrentIndex((idx) => (idx === -1 ? 0 : idx))
   }, [])
+
+  const addPaths = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return
+      appendTracks(await buildTracks(paths))
+    },
+    [appendTracks],
+  )
 
   /**
    * Agrega una pista y devuelve su indice. Si ya existe (misma ruta o mismo
@@ -72,17 +84,15 @@ export function usePlaylist() {
     return targetIndex
   }, [])
 
-  const removeAt = useCallback((index: number) => {
-    setTracks((prev) => {
-      const next = prev.filter((_, i) => i !== index)
-      return next
-    })
+  /** Quita una o varias pistas (seleccion multiple). */
+  const removeMany = useCallback((indices: number[]) => {
+    const removed = new Set(indices)
+    setTracks((prev) => prev.filter((_, i) => !removed.has(i)))
     setCurrentIndex((idx) => {
-      if (index < idx) return idx - 1
-      if (index === idx) return idx >= tracks.length - 1 ? tracks.length - 2 : idx
-      return idx
+      if (idx < 0 || removed.has(idx)) return -1
+      return idx - indices.filter((i) => i < idx).length
     })
-  }, [tracks.length])
+  }, [])
 
   const clear = useCallback(() => {
     setTracks([])
@@ -104,6 +114,24 @@ export function usePlaylist() {
       return idx
     })
   }, [])
+
+  /**
+   * Mueve un grupo de pistas (arrastrar) para que queden juntas, en su orden,
+   * antes de la posicion `to` de la lista original (0..largo).
+   */
+  const moveMany = useCallback(
+    (indices: number[], to: number) => {
+      const moving = new Set(indices)
+      const currentId = tracks[currentIndex]?.id
+      const block = tracks.filter((_, i) => moving.has(i))
+      const rest = tracks.filter((_, i) => !moving.has(i))
+      const insertAt = to - indices.filter((i) => i < to).length
+      const next = [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)]
+      setTracks(next)
+      if (currentId) setCurrentIndex(next.findIndex((t) => t.id === currentId))
+    },
+    [tracks, currentIndex],
+  )
 
   /** Ordena la lista manteniendo seleccionada la misma pista. */
   const sortBy = useCallback(
@@ -167,10 +195,12 @@ export function usePlaylist() {
     setRepeat,
     hydrate,
     addPaths,
+    appendTracks,
     addTrack,
-    removeAt,
+    removeMany,
     clear,
     move,
+    moveMany,
     setDuration,
     sortBy,
     pickNextIndex,

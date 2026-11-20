@@ -23,12 +23,28 @@ export interface AudioEngine {
   setEqPreset: (name: string) => void
   fadeTo: (value: number, seconds: number, from?: number) => void
   getOutputLatency: () => number
-  hydrateAudio: (data: {
-    volume: number
-    muted: boolean
-    eqGains: EqGains
-    eqPreset: string
-  }) => void
+  playbackRate: number
+  setPlaybackRate: (rate: number) => void
+  prepareGhost: (url: string, startAt: number, seekable: boolean) => void
+  startGhostTail: (seconds: number) => boolean
+  disposeGhost: () => void
+  hydrateAudio: (data: AudioHydration) => void
+}
+
+export interface AudioHydration {
+  volume: number
+  muted: boolean
+  eqGains: EqGains
+  eqPreset: string
+  playbackRate: number
+}
+
+/** Reproductor auxiliar que hace sonar la cola de la cancion anterior. */
+interface Ghost {
+  el: HTMLAudioElement
+  source: MediaElementAudioSourceNode
+  gain: GainNode
+  timer: number | null
 }
 
 const FFT_SIZE = 512
@@ -51,6 +67,7 @@ export function useAudioEngine(
   )
   const [eqGains, setEqGains] = useState<EqGains>(() => flatGains())
   const [eqPreset, setEqPresetState] = useState<string>(DEFAULT_PRESET)
+  const [playbackRate, setPlaybackRateState] = useState(1)
 
   // Ref siempre actualizado a las ganancias, para que ensureAnalyser no las
   // tenga como dependencia (si no, cambiar el preset recreaba play() y el
@@ -65,6 +82,7 @@ export function useAudioEngine(
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null)
   const filtersRef = useRef<BiquadFilterNode[]>([])
   const fadeRef = useRef<GainNode | null>(null)
+  const ghostRef = useRef<Ghost | null>(null)
   const rafRef = useRef<number | null>(null)
   const dataRef = useRef<Uint8Array<ArrayBuffer>>(
     new Uint8Array(new ArrayBuffer(FFT_SIZE / 2)),
@@ -95,14 +113,16 @@ export function useAudioEngine(
         return filter
       })
 
-      // source -> f0 -> ... -> fN -> fade -> analyser -> destination
+      // source -> fade -> f0 -> ... -> fN -> analyser -> destination
+      // El fundido va antes del EQ: la cola de la cancion anterior (fundido
+      // cruzado) entra al EQ con su propio volumen, sin pasar por este.
+      const fade = ctx.createGain()
+      source.connect(fade)
       const last = filters.reduce<AudioNode>((prev, node) => {
         prev.connect(node)
         return node
-      }, source)
-      const fade = ctx.createGain()
-      last.connect(fade)
-      fade.connect(analyser)
+      }, fade)
+      last.connect(analyser)
       analyser.connect(ctx.destination)
       fadeRef.current = fade
 
@@ -139,9 +159,86 @@ export function useAudioEngine(
     media.play().catch(() => undefined)
   }, [mediaRef, ensureAnalyser])
 
+  const disposeGhost = useCallback(() => {
+    const ghost = ghostRef.current
+    if (!ghost) return
+    ghostRef.current = null
+    if (ghost.timer != null) window.clearTimeout(ghost.timer)
+    ghost.el.pause()
+    ghost.el.removeAttribute('src')
+    ghost.el.load()
+    ghost.source.disconnect()
+    ghost.gain.disconnect()
+  }, [])
+
+  /**
+   * Prepara en silencio la cola de la cancion actual desde `startAt` (para el
+   * fundido cruzado). `seekable`: el archivo admite saltar con currentTime;
+   * si no (stream de ffmpeg), la URL ya debe empezar en ese punto.
+   */
+  const prepareGhost = useCallback(
+    (url: string, startAt: number, seekable: boolean) => {
+      disposeGhost()
+      const ctx = audioCtxRef.current
+      const media = mediaRef.current
+      const eqInput = filtersRef.current[0]
+      if (!ctx || !media || !eqInput) return
+      const el = new Audio()
+      el.crossOrigin = 'anonymous'
+      el.preload = 'auto'
+      el.volume = media.volume
+      el.muted = media.muted
+      el.defaultPlaybackRate = media.playbackRate
+      const source = ctx.createMediaElementSource(el)
+      const gain = ctx.createGain()
+      gain.gain.value = 0
+      source.connect(gain)
+      gain.connect(eqInput)
+      if (seekable) {
+        el.addEventListener('loadedmetadata', () => (el.currentTime = startAt), { once: true })
+      }
+      el.src = url
+      ghostRef.current = { el, source, gain, timer: null }
+    },
+    [mediaRef, disposeGhost],
+  )
+
+  /**
+   * Hace sonar la cola preparada bajando su volumen hasta 0 en `seconds`.
+   * Devuelve false si todavia no tiene datos para sonar sin cortes.
+   */
+  const startGhostTail = useCallback(
+    (seconds: number): boolean => {
+      const ghost = ghostRef.current
+      const ctx = audioCtxRef.current
+      if (!ghost || !ctx) return false
+      if (ghost.el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA || ghost.el.seeking) return false
+      ghost.el.play().catch(() => undefined)
+      const now = ctx.currentTime
+      ghost.gain.gain.setValueAtTime(fadeRef.current?.gain.value ?? 1, now)
+      ghost.gain.gain.linearRampToValueAtTime(0, now + seconds)
+      ghost.timer = window.setTimeout(disposeGhost, seconds * 1000)
+      return true
+    },
+    [disposeGhost],
+  )
+
   const pause = useCallback(() => {
+    disposeGhost()
     mediaRef.current?.pause()
-  }, [mediaRef])
+  }, [mediaRef, disposeGhost])
+
+  const setPlaybackRate = useCallback(
+    (rate: number) => {
+      setPlaybackRateState(rate)
+      const media = mediaRef.current
+      if (!media) return
+      // defaultPlaybackRate se conserva al cargar otra pista; playbackRate no.
+      media.defaultPlaybackRate = rate
+      media.playbackRate = rate
+    },
+    [mediaRef],
+  )
 
   const toggle = useCallback(() => {
     const media = mediaRef.current
@@ -278,11 +375,12 @@ export function useAudioEngine(
   }, [])
 
   const hydrateAudio = useCallback(
-    (data: { volume: number; muted: boolean; eqGains: EqGains; eqPreset: string }) => {
+    (data: AudioHydration) => {
       setVolumeState(data.volume)
       setMuted(data.muted)
       if (data.eqGains.length > 0) setEqGains(data.eqGains)
       setEqPresetState(data.eqPreset)
+      setPlaybackRate(data.playbackRate)
       const media = mediaRef.current
       if (media) {
         media.volume = data.volume
@@ -292,7 +390,7 @@ export function useAudioEngine(
         f.gain.value = data.eqGains[i] ?? 0
       })
     },
-    [mediaRef],
+    [mediaRef, setPlaybackRate],
   )
 
   return {
@@ -316,6 +414,11 @@ export function useAudioEngine(
     setEqPreset,
     fadeTo,
     getOutputLatency,
+    playbackRate,
+    setPlaybackRate,
+    prepareGhost,
+    startGhostTail,
+    disposeGhost,
     hydrateAudio,
   }
 }

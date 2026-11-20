@@ -122,27 +122,29 @@ export function searchYoutube(query: string, page = 1): Promise<YtSearchResult[]
   })
 }
 
-const audioCache = new Map<string, { url: string; ts: number }>()
-const AUDIO_TTL = 90 * 60 * 1000 // las URLs de googlevideo caducan; 90 min de margen
+const streamCache = new Map<string, { url: string; ts: number }>()
+const STREAM_TTL = 90 * 60 * 1000 // las URLs de googlevideo caducan; 90 min de margen
 
 /**
- * Resuelve la URL directa del stream de audio de un video. El player_client
+ * Resuelve la URL directa del stream de un video: solo audio o, con
+ * `withVideo`, un formato con imagen y sonido. El player_client
  * android/web_embedded/tv evita el "Sign in to confirm you're not a bot".
  */
-export function resolveAudioUrl(videoId: string): Promise<string> {
+export function resolveStreamUrl(videoId: string, withVideo = false): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!/^[A-Za-z0-9_-]{6,15}$/.test(videoId)) {
       reject(new Error('id invalido'))
       return
     }
-    const hit = audioCache.get(videoId)
-    if (hit && Date.now() - hit.ts < AUDIO_TTL) {
+    const cacheKey = `${withVideo ? 'v' : 'a'}:${videoId}`
+    const hit = streamCache.get(cacheKey)
+    if (hit && Date.now() - hit.ts < STREAM_TTL) {
       resolve(hit.url)
       return
     }
     const bin = ytdlpPath()
     const args = [
-      '-f', 'bestaudio/best',
+      '-f', withVideo ? 'best[vcodec!=none][acodec!=none]/best' : 'bestaudio/best',
       '-g',
       '--no-warnings',
       '--no-playlist',
@@ -159,7 +161,7 @@ export function resolveAudioUrl(videoId: string): Promise<string> {
         reject(new Error('sin url'))
         return
       }
-      audioCache.set(videoId, { url, ts: Date.now() })
+      streamCache.set(cacheKey, { url, ts: Date.now() })
       resolve(url)
     })
   })

@@ -1420,3 +1420,132 @@ input.eq__slider::-webkit-slider-thumb {
   align-items: center;
   padding: 0;
 }
+
+/* --- Presets propios del ecualizador --- */
+.eq__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.eq__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.eq__icon-btn:hover {
+  color: var(--accent);
+}
+
+.eq__icon-btn--danger:hover {
+  color: #e5534b;
+}
+
+/* --- Buscador: agregar como audio o video --- */
+.ytsearch__mode {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 6px;
+}
+
+.ytsearch__mode-btn {
+  flex: 1;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ytsearch__mode-btn:hover {
+  color: var(--text);
+}
+
+.ytsearch__mode-btn.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* --- Lista: seleccion multiple y arrastrar para reordenar --- */
+.playlist__list:focus {
+  outline: none;
+}
+
+.playlist__item.is-selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.playlist__item.is-drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.playlist__item.is-drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* --- Barra de estado: fundido, velocidad y temporizador --- */
+.statusbar__center {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.statusbar__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.statusbar__btn.is-active {
+  color: var(--accent);
+}
+
+/* --- Subtitulos sobre el video --- */
+.subtitles {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 48px;
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  pointer-events: none;
+}
+
+.subtitles__text {
+  max-width: 90%;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: clamp(13px, 2.4vw, 28px);
+  line-height: 1.35;
+  text-align: center;
+  white-space: pre-line;
+  text-shadow: 0 1px 2px #000;
+}
+
+/* --- Acerca de: idioma y actualizaciones --- */
+.about__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.about__lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

@@ -17,15 +17,18 @@ import {
   probeMedia,
   transcodeToStream,
   extractAudioFromUrl,
+  extractVideoFromUrl,
   readTags,
   extractCover,
   type ProbeResult,
 } from './ffmpeg'
-import { searchYoutube, resolveAudioUrl, prepareYtdlp } from './youtube'
+import { searchYoutube, resolveStreamUrl, prepareYtdlp } from './youtube'
 import { fetchLyrics, type LyricsQuery } from './lyrics'
 import { exportM3u, importM3u, type M3uTrack } from './m3u'
 import { computeSnap, areAdjacent, DOCK_GAP, type Rect } from './windows'
 import { initUpdater, checkForUpdatesManually } from './updater'
+import { setMainLang, tr, type Lang } from './i18n'
+import { findSiblingSubtitles, readSubtitles, SUBTITLE_EXT } from './subtitles'
 import type { MediaCommand } from '../preload'
 import {
   loadState,
@@ -50,6 +53,7 @@ if (!app.isPackaged) {
 if (app.isPackaged && !app.requestSingleInstanceLock()) app.exit(0)
 
 const state: PersistedState = loadState()
+setMainLang(state.language)
 
 function persistWindowBounds(): void {
   // Durante el cierre no tocamos el estado: ya lo congelamos en before-quit.
@@ -130,10 +134,14 @@ const MIME_TYPES: Record<string, string> = {
 
 /** Decodifica una URL wmedia://host/<ruta> a una ruta absoluta del sistema. */
 function mediaUrlToPath(url: string): string {
-  const withoutScheme = url.slice(`${MEDIA_SCHEME}://`.length)
-  const firstSlash = withoutScheme.indexOf('/')
-  const encodedPath = firstSlash === -1 ? '' : withoutScheme.slice(firstSlash + 1)
-  return path.normalize(decodeURIComponent(encodedPath))
+  // pathname excluye la query (?t=...) y empieza con '/'.
+  return path.normalize(decodeURIComponent(new URL(url).pathname.slice(1)))
+}
+
+/** Segundos de inicio pedidos con ?t= (0 si no hay o no es valido). */
+function startSecondsOf(url: string): number {
+  const t = Number(new URL(url).searchParams.get('t') ?? 0)
+  return Number.isFinite(t) && t > 0 ? t : 0
 }
 
 /** Interpreta un header Range (bytes=start-end) sobre un tamano total. */
@@ -199,92 +207,38 @@ function serveDirect(filePath: string, size: number, rangeHeader: string | null)
   })
 }
 
-/** Sirve el archivo transcodificado a MP4 fragmentado por streaming (sin Range). */
-function serveTranscoded(filePath: string, probe: ProbeResult): Response {
-  const proc = transcodeToStream(filePath, probe)
-  proc.stderr.on('data', () => {
-    // ffmpeg escribe progreso en stderr; se ignora salvo depuracion.
-  })
-  const webStream = Readable.toWeb(proc.stdout) as ReadableStream
-  // Si el consumidor cancela (cambio de pista), matamos ffmpeg.
-  const body = new ReadableStream({
-    start(controller) {
-      const reader = webStream.getReader()
-      const pump = (): void => {
-        reader.read().then(
-          ({ done, value }) => {
-            if (done) {
-              controller.close()
-              return
-            }
-            controller.enqueue(value)
-            pump()
-          },
-          (err) => controller.error(err),
-        )
-      }
-      pump()
-    },
-    cancel() {
-      proc.kill('SIGKILL')
-    },
-  })
-
-  return new Response(body, {
-    status: 200,
-    headers: {
-      'Content-Type': 'video/mp4',
-    },
-  })
-}
-
 /**
- * Sirve el audio de un video de YouTube a traves de nuestro origen (wmedia).
- * yt-dlp resuelve la URL del stream; ffmpeg descarta el video (-vn) y entrega
- * solo audio AAC. Esto evita dos problemas: el CORS de googlevideo (que taintea
- * Web Audio) y el "Unsupported pixel format" cuando el stream trae video.
+ * Entrega la salida de un proceso ffmpeg como respuesta en streaming. Si el
+ * reproductor cancela (cambio de pista, adelantar), se mata ffmpeg; la bandera
+ * `closed` evita cerrar dos veces el controlador ("Invalid state").
  */
-async function serveYoutube(videoId: string, startSeconds: number): Promise<Response> {
-  let streamUrl: string
-  try {
-    streamUrl = await resolveAudioUrl(videoId)
-  } catch {
-    return new Response('No se pudo resolver el audio', { status: 502 })
-  }
-
-  const proc = extractAudioFromUrl(streamUrl, startSeconds)
+function streamProcess(proc: ReturnType<typeof transcodeToStream>, contentType: string): Response {
   proc.stderr.on('data', () => {
     // ffmpeg escribe progreso en stderr; se ignora salvo depuracion.
   })
-
   let closed = false
-  const webStream = Readable.toWeb(proc.stdout) as ReadableStream
-  const reader = webStream.getReader()
-  const body = new ReadableStream({
+  const reader = (Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>).getReader()
+  const body = new ReadableStream<Uint8Array>({
     start(controller) {
+      const finish = () => {
+        if (closed) return
+        closed = true
+        try {
+          controller.close()
+        } catch {
+          // El controlador ya pudo cerrarse por cancelacion.
+        }
+      }
       const pump = (): void => {
-        reader.read().then(
-          ({ done, value }) => {
-            if (closed) return
-            if (done) {
-              closed = true
-              controller.close()
-              return
-            }
-            controller.enqueue(value)
-            pump()
-          },
-          () => {
-            if (!closed) {
-              closed = true
-              try {
-                controller.close()
-              } catch {
-                // El controlador ya pudo cerrarse por cancelacion.
-              }
-            }
-          },
-        )
+        reader.read().then(({ done, value }) => {
+          if (closed) return
+          if (done) {
+            finish()
+            return
+          }
+          controller.enqueue(value)
+          pump()
+        }, finish)
       }
       pump()
     },
@@ -294,20 +248,34 @@ async function serveYoutube(videoId: string, startSeconds: number): Promise<Resp
       proc.kill('SIGKILL')
     },
   })
+  return new Response(body, { status: 200, headers: { 'Content-Type': contentType } })
+}
 
-  return new Response(body, {
-    status: 200,
-    headers: { 'Content-Type': 'audio/mpeg' },
-  })
+/**
+ * Sirve un video de YouTube a traves de nuestro origen (wmedia), evitando el
+ * CORS de googlevideo (que taintea Web Audio). Audio: ffmpeg descarta la
+ * imagen y entrega MP3. Video: ffmpeg convierte a WebM VP8 + Opus.
+ * `startSeconds` permite adelantar reiniciando el stream desde ese punto.
+ */
+async function serveYoutube(videoId: string, startSeconds: number, withVideo: boolean): Promise<Response> {
+  let streamUrl: string
+  try {
+    streamUrl = await resolveStreamUrl(videoId, withVideo)
+  } catch {
+    return new Response('No se pudo resolver el video', { status: 502 })
+  }
+  return withVideo
+    ? streamProcess(extractVideoFromUrl(streamUrl, startSeconds), 'video/webm')
+    : streamProcess(extractAudioFromUrl(streamUrl, startSeconds), 'audio/mpeg')
 }
 
 function registerMediaProtocol(): void {
   protocol.handle(MEDIA_SCHEME, async (request) => {
-    // Stream remoto de YouTube: wmedia://youtube/<videoId>?t=<segundos>
+    // Stream remoto de YouTube: wmedia://youtube/<videoId>?t=<segundos>&v=1
     const ytMatch = /^wmedia:\/\/youtube\/([A-Za-z0-9_-]{6,15})/.exec(request.url)
     if (ytMatch) {
-      const t = Number(new URL(request.url).searchParams.get('t') ?? 0)
-      return serveYoutube(ytMatch[1], Number.isFinite(t) && t > 0 ? t : 0)
+      const withVideo = new URL(request.url).searchParams.get('v') === '1'
+      return serveYoutube(ytMatch[1], startSecondsOf(request.url), withVideo)
     }
 
     // Caratula incrustada de un archivo local: wmedia://cover/<ruta>
@@ -332,7 +300,7 @@ function registerMediaProtocol(): void {
     try {
       const probe = await getProbe(filePath)
       if (!probe.nativePlayable) {
-        return serveTranscoded(filePath, probe)
+        return streamProcess(transcodeToStream(filePath, probe, startSecondsOf(request.url)), 'video/mp4')
       }
     } catch {
       // Si ffprobe falla, intentamos servir directo igualmente.
@@ -765,8 +733,8 @@ function registerIpc(): void {
   }))
 
   // La ventana de busqueda pide agregar -> la principal maneja la playlist.
-  ipcMain.on('search:add', (_e, result) => {
-    win?.webContents.send('search:addResult', result)
+  ipcMain.on('search:add', (_e, payload) => {
+    win?.webContents.send('search:addResult', payload)
   })
 
   // Puente de ganancias: la ventana EQ emite -> la principal aplica al grafo.
@@ -787,11 +755,11 @@ function registerIpc(): void {
   ipcMain.handle('dialog:openFiles', async () => {
     if (!win) return []
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Agregar archivos',
+      title: tr('dlg.addFiles'),
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: 'Multimedia', extensions: MEDIA_EXT.map((e) => e.slice(1)) },
-        { name: 'Todos los archivos', extensions: ['*'] },
+        { name: tr('dlg.media'), extensions: MEDIA_EXT.map((e) => e.slice(1)) },
+        { name: tr('dlg.allFiles'), extensions: ['*'] },
       ],
     })
     if (canceled) return []
@@ -801,7 +769,7 @@ function registerIpc(): void {
   ipcMain.handle('dialog:openFolder', async () => {
     if (!win) return []
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Agregar carpeta',
+      title: tr('dlg.addFolder'),
       properties: ['openDirectory'],
     })
     if (canceled || filePaths.length === 0) return []
@@ -814,6 +782,41 @@ function registerIpc(): void {
 
   // --- Datos de la cancion y letras ---
   ipcMain.handle('media:tags', (_e, filePath: string) => readTags(filePath))
+  // Si el archivo se convierte con ffmpeg (sin seek nativo) y su duracion real.
+  ipcMain.handle('media:probe', async (_e, filePath: string) => {
+    const probe = await getProbe(filePath)
+    return { nativePlayable: probe.nativePlayable, duration: probe.duration }
+  })
+
+  // --- Subtitulos de videos ---
+  ipcMain.handle('subtitles:find', (_e, videoPath: string) => findSiblingSubtitles(videoPath))
+  ipcMain.handle('subtitles:open', async () => {
+    if (!win) return null
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: tr('dlg.subtitles'),
+      properties: ['openFile'],
+      filters: [{ name: tr('dlg.subtitlesFilter'), extensions: SUBTITLE_EXT.map((e) => e.slice(1)) }],
+    })
+    if (canceled || filePaths.length === 0) return null
+    return readSubtitles(filePaths[0])
+  })
+
+  // --- Idioma: la bandeja y los dialogos nativos siguen al de la interfaz ---
+  ipcMain.on('app:setLanguage', (_e, lang: Lang) => {
+    const next: Lang = lang === 'en' ? 'en' : 'es'
+    if (next === state.language) return
+    state.language = next
+    setMainLang(next)
+    buildTrayMenu()
+    saveState(state)
+  })
+
+  // --- Archivos abiertos desde el Explorador ---
+  ipcMain.handle('app:takeLaunchFiles', () => {
+    const files = launchFiles
+    launchFiles = []
+    return files
+  })
   ipcMain.handle('lyrics:get', (_e, query: LyricsQuery) => fetchLyrics(query))
 
   // --- Respaldo completo: listas, ecualizador y volumen (sin ventanas, que
@@ -822,9 +825,9 @@ function registerIpc(): void {
     if (!win) return false
     const date = new Date().toISOString().slice(0, 10)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: 'Exportar respaldo',
-      defaultPath: `winmusic-respaldo-${date}.json`,
-      filters: [{ name: 'Respaldo de winMusic', extensions: ['json'] }],
+      title: tr('dlg.exportBackup'),
+      defaultPath: `${tr('dlg.backupFileName')}-${date}.json`,
+      filters: [{ name: tr('dlg.backupFilter'), extensions: ['json'] }],
     })
     if (canceled || !filePath) return false
     const backup = {
@@ -841,9 +844,9 @@ function registerIpc(): void {
   ipcMain.handle('backup:import', async (): Promise<'imported' | 'canceled' | 'invalid'> => {
     if (!win) return 'canceled'
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Importar respaldo',
+      title: tr('dlg.importBackup'),
       properties: ['openFile'],
-      filters: [{ name: 'Respaldo de winMusic', extensions: ['json'] }],
+      filters: [{ name: tr('dlg.backupFilter'), extensions: ['json'] }],
     })
     if (canceled || filePaths.length === 0) return 'canceled'
 
@@ -860,10 +863,10 @@ function registerIpc(): void {
 
     const { response } = await dialog.showMessageBox(win, {
       type: 'warning',
-      title: 'Importar respaldo',
-      message: 'Se reemplazaran todas tus listas, el ecualizador y el volumen.',
-      detail: `El respaldo tiene ${playlist.lists.length} lista(s). Esta accion no se puede deshacer.`,
-      buttons: ['Importar', 'Cancelar'],
+      title: tr('dlg.importBackup'),
+      message: tr('dlg.importMessage'),
+      detail: tr('dlg.importDetail', { n: playlist.lists.length }),
+      buttons: [tr('dlg.import'), tr('dlg.cancel')],
       defaultId: 1,
       cancelId: 1,
     })
@@ -882,11 +885,11 @@ function registerIpc(): void {
   // --- Listas .m3u ---
   ipcMain.handle('playlist:export', async (_e, name: string, tracks: M3uTrack[]) => {
     if (!win) return false
-    const safeName = name.replace(/[\\/:*?"<>|]/g, '_') || 'lista'
+    const safeName = name.replace(/[\\/:*?"<>|]/g, '_') || tr('dlg.listDefaultName')
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: 'Exportar lista',
+      title: tr('dlg.exportList'),
       defaultPath: `${safeName}.m3u8`,
-      filters: [{ name: 'Lista M3U', extensions: ['m3u8', 'm3u'] }],
+      filters: [{ name: tr('dlg.listFilter'), extensions: ['m3u8', 'm3u'] }],
     })
     if (canceled || !filePath) return false
     await exportM3u(filePath, tracks)
@@ -895,9 +898,9 @@ function registerIpc(): void {
   ipcMain.handle('playlist:import', async () => {
     if (!win) return null
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Importar lista',
+      title: tr('dlg.importList'),
       properties: ['openFile'],
-      filters: [{ name: 'Lista M3U', extensions: ['m3u8', 'm3u'] }],
+      filters: [{ name: tr('dlg.listFilter'), extensions: ['m3u8', 'm3u'] }],
     })
     if (canceled || filePaths.length === 0) return null
     const filePath = filePaths[0]
@@ -937,6 +940,28 @@ function registerIpc(): void {
     state.playlist = { ...state.playlist, ...playlist }
     saveState(state)
   })
+  // Punto de reproduccion: se guarda aparte porque cambia cada pocos segundos.
+  ipcMain.on('state:saveResume', (_e, resume: PersistedState['playlist']['resume']) => {
+    state.playlist = { ...state.playlist, resume }
+    saveState(state)
+  })
+  // Presets propios del ecualizador: los maneja la ventana del EQ directamente.
+  ipcMain.handle('eq:getCustomPresets', () => state.audio.customPresets ?? {})
+  ipcMain.handle('eq:saveCustomPreset', (_e, name: string, gains: number[]) => {
+    const clean = String(name).trim().slice(0, 40)
+    if (!clean || !Array.isArray(gains)) return state.audio.customPresets
+    state.audio.customPresets = { ...state.audio.customPresets, [clean]: gains.map(Number) }
+    saveState(state)
+    return state.audio.customPresets
+  })
+  ipcMain.handle('eq:deleteCustomPreset', (_e, name: string) => {
+    const next = { ...state.audio.customPresets }
+    delete next[name]
+    state.audio.customPresets = next
+    saveState(state)
+    return next
+  })
+
   ipcMain.on('state:saveAudio', (_e, audio: Partial<PersistedState['audio']>) => {
     state.audio = { ...state.audio, ...audio }
     saveState(state)
@@ -1073,18 +1098,24 @@ function toggleAllWindows(): void {
 function createTray(): void {
   tray = new Tray(appIconPath())
   tray.setToolTip('winMusic')
-  tray.setContextMenu(
+  buildTrayMenu()
+  tray.on('click', toggleAllWindows)
+}
+
+/** Menu de la bandeja en el idioma actual (se rehace al cambiar de idioma). */
+function buildTrayMenu(): void {
+  tray?.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Mostrar / ocultar', click: toggleAllWindows },
+      { label: tr('tray.toggle'), click: toggleAllWindows },
       { type: 'separator' },
-      { label: 'Reproducir / pausa', click: () => sendMediaCommand('playpause') },
-      { label: 'Siguiente', click: () => sendMediaCommand('next') },
-      { label: 'Anterior', click: () => sendMediaCommand('prev') },
-      { label: 'Detener', click: () => sendMediaCommand('stop') },
+      { label: tr('tray.playPause'), click: () => sendMediaCommand('playpause') },
+      { label: tr('tray.next'), click: () => sendMediaCommand('next') },
+      { label: tr('tray.prev'), click: () => sendMediaCommand('prev') },
+      { label: tr('tray.stop'), click: () => sendMediaCommand('stop') },
       { type: 'separator' },
-      { label: 'Buscar actualizaciones', click: checkForUpdatesManually },
+      { label: tr('tray.checkUpdates'), click: checkForUpdatesManually },
       {
-        label: 'Acerca de winMusic',
+        label: tr('tray.about'),
         click: () => {
           if (!win || win.isDestroyed()) return
           win.show()
@@ -1093,10 +1124,9 @@ function createTray(): void {
           win.webContents.send('app:showAbout')
         },
       },
-      { label: 'Salir', click: () => app.quit() },
+      { label: tr('tray.quit'), click: () => app.quit() },
     ]),
   )
-  tray.on('click', toggleAllWindows)
 }
 
 /** Teclas multimedia del teclado: funcionan aunque la app no tenga el foco. */
@@ -1114,12 +1144,27 @@ function registerMediaKeys(): void {
   }
 }
 
-// Si se intenta abrir otra instancia, se muestra la que ya estaba abierta.
-app.on('second-instance', () => {
+/**
+ * Archivos multimedia recibidos por linea de comandos ("Abrir con" o doble
+ * clic en el Explorador). Se ignoran los argumentos de Electron/Chromium.
+ */
+function mediaArgs(argv: string[]): string[] {
+  return argv.filter((arg) => !arg.startsWith('-') && path.isAbsolute(arg) && isMediaFile(arg))
+}
+
+// Los del primer arranque se entregan cuando la interfaz termina de cargar
+// sus listas (los pide con app:takeLaunchFiles).
+let launchFiles: string[] = mediaArgs(process.argv.slice(1))
+
+// Si se intenta abrir otra instancia, se muestra la que ya estaba abierta y
+// se reproducen los archivos con que se la llamo.
+app.on('second-instance', (_e, argv) => {
   if (!win || win.isDestroyed()) return
   for (const w of [win, eqWin, searchWin]) if (w && !w.isDestroyed()) w.show()
   if (win.isMinimized()) win.restore()
   win.focus()
+  const files = mediaArgs(argv.slice(1))
+  if (files.length > 0) win.webContents.send('app:openFiles', files)
 })
 
 app.whenReady().then(() => {

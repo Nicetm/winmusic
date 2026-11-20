@@ -43,6 +43,20 @@
     ],
     "icon": "build/icon.ico"
   },
+  "fileAssociations": [
+    {
+      "ext": ["mp3", "wav", "ogg", "flac", "m4a", "aac"],
+      "name": "winMusic.Audio",
+      "description": "Audio",
+      "icon": "icon.ico"
+    },
+    {
+      "ext": ["mp4", "webm", "mkv", "mov", "avi"],
+      "name": "winMusic.Video",
+      "description": "Video",
+      "icon": "icon.ico"
+    }
+  ],
   "nsis": {
     "artifactName": "winMusic-Setup-${version}.${ext}",
     "oneClick": false,

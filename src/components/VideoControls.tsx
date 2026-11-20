@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useT } from '../i18n'
 import { Icon } from './Icon'
+
+/** none: sin subtitulos cargados; on/off: cargados y visibles u ocultos. */
+export type SubtitlesState = 'none' | 'on' | 'off'
 
 interface Props {
   /** Contenedor del escenario que entra en pantalla completa. */
   stageRef: React.RefObject<HTMLDivElement | null>
   mediaRef: React.RefObject<HTMLVideoElement | null>
+  subtitles: SubtitlesState
+  onSubtitles: () => void
 }
 
-export function VideoControls({ stageRef, mediaRef }: Props) {
+export function VideoControls({ stageRef, mediaRef, subtitles, onSubtitles }: Props) {
+  const { t } = useT()
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [pipSupported] = useState(() => document.pictureInPictureEnabled)
   const [inPip, setInPip] = useState(false)
@@ -51,14 +58,31 @@ export function VideoControls({ stageRef, mediaRef }: Props) {
     }
   }, [mediaRef])
 
+  const subtitlesTitle =
+    subtitles === 'none'
+      ? t('ctl.subtitlesLoad')
+      : subtitles === 'on'
+        ? t('ctl.subtitlesOff')
+        : t('ctl.subtitlesOn')
+
+  const fullscreenTitle = isFullscreen ? t('ctl.fullscreenExit') : t('ctl.fullscreen')
+
   return (
     <div className="videoctrl">
+      <button
+        className={`videoctrl__btn${subtitles === 'on' ? ' is-active' : ''}`}
+        onClick={onSubtitles}
+        aria-label={subtitlesTitle}
+        title={subtitlesTitle}
+      >
+        <Icon name="subtitles" size={18} />
+      </button>
       {pipSupported && (
         <button
           className={`videoctrl__btn${inPip ? ' is-active' : ''}`}
           onClick={togglePip}
-          aria-label="Picture in picture"
-          title="Picture in picture"
+          aria-label={t('ctl.pip')}
+          title={t('ctl.pip')}
         >
           <Icon name="pip" size={18} />
         </button>
@@ -66,8 +90,8 @@ export function VideoControls({ stageRef, mediaRef }: Props) {
       <button
         className="videoctrl__btn"
         onClick={toggleFullscreen}
-        aria-label={isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
-        title={isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
+        aria-label={fullscreenTitle}
+        title={fullscreenTitle}
       >
         <Icon name={isFullscreen ? 'fullscreenExit' : 'fullscreen'} size={18} />
       </button>

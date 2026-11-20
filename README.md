@@ -14,15 +14,20 @@ Desde la versión 1.2.0 la app se actualiza sola: al abrirse busca una versión 
 
 ## Funciones
 
-- **Audio y video locales**: mp3, wav, ogg, flac, m4a, aac, mp4, webm, mkv, mov, avi. Los formatos que Chromium no reproduce (HEVC, MKV, etc.) se convierten al vuelo con ffmpeg.
-- **YouTube**: buscador en ventana propia; las canciones se agregan a la lista y se reproducen como audio.
-- **Listas**: varias listas con nombre, búsqueda, ordenar por nombre o duración, mover o copiar canciones entre listas, importar y exportar `.m3u`. Se pueden arrastrar archivos y carpetas a la ventana.
-- **Ecualizador** de 10 bandas con presets, en ventana propia.
+- **Audio y video locales**: mp3, wav, ogg, flac, m4a, aac, mp4, webm, mkv, mov, avi. Los formatos que Chromium no reproduce (HEVC, MKV, AVI, etc.) se convierten al vuelo con ffmpeg, y se puede adelantar igual.
+- **Abrir desde el Explorador**: doble clic o "Abrir con → winMusic" en canciones y videos.
+- **Subtítulos** `.srt` / `.vtt` en los videos: se cargan solos si tienen el mismo nombre que el video, o se eligen con el botón de subtítulos.
+- **YouTube**: buscador en ventana propia; cada resultado se agrega como audio o como video.
+- **Listas**: varias listas con nombre, búsqueda, ordenar por nombre o duración, arrastrar para reordenar, selección múltiple (Ctrl / Mayús + clic), mover o copiar canciones entre listas, importar y exportar `.m3u`. Se pueden arrastrar archivos y carpetas a la ventana.
+- **Ecualizador** de 10 bandas con presets y presets propios, en ventana propia.
+- **Fundido cruzado** entre canciones, **velocidad** de 0,5x a 2x y **temporizador** para apagar la música.
+- **Retoma** la última canción donde quedó al volver a abrir la app.
+- **Idiomas**: español e inglés (en "Acerca de").
 - **Visualizador** con cuatro modos (clic sobre el gráfico para cambiar) y colores arcoíris en toda la app.
 - **Ahora suena**: título, artista y carátula del archivo, o la miniatura del video de YouTube.
 - **Letras sincronizadas** desde [LRCLIB](https://lrclib.net), con ajuste manual de desfase por canción.
 - **Ventanas acoplables**: el ecualizador y el buscador se pegan al reproductor y se mueven con él.
-- **Modo mini** siempre visible, **ícono en la bandeja del sistema**, tema claro y oscuro, y fundido entre canciones.
+- **Modo mini** siempre visible, **ícono en la bandeja del sistema** y tema claro y oscuro.
 - Recuerda la posición de las ventanas, las listas, el volumen y el ecualizador.
 
 ## Atajos
@@ -32,6 +37,8 @@ Desde la versión 1.2.0 la app se actualiza sola: al abrirse busca una versión 
 | `Espacio` | Reproducir / pausa |
 | `←` / `→` | Retroceder / adelantar 5 s |
 | `↑` / `↓` | Subir / bajar volumen |
+| `Ctrl` / `Mayús` + clic | Seleccionar varias canciones de la lista |
+| `Supr` | Quitar las canciones seleccionadas |
 | Teclas multimedia | Play, siguiente, anterior y stop, aunque la app no tenga el foco |
 
 ## Desarrollo
@@ -101,7 +108,7 @@ This program will not transfer any information to other networked systems unless
 
 Funciones que se conectan a internet solo cuando el usuario las usa:
 
-- **Búsqueda y reproducción de YouTube:** envía el texto buscado y pide el audio a YouTube. Aplica la [política de privacidad de Google](https://policies.google.com/privacy).
+- **Búsqueda y reproducción de YouTube:** envía el texto buscado y pide el audio o el video a YouTube. Aplica la [política de privacidad de Google](https://policies.google.com/privacy).
 - **Letras:** envía a [LRCLIB](https://lrclib.net) el título, el artista y la duración de la canción que suena.
 - **Carátulas de YouTube:** descarga la miniatura del video desde los servidores de YouTube.
 

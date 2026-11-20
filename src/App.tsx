@@ -5,7 +5,8 @@ import { SeekBar } from './components/SeekBar'
 import { VolumeControl } from './components/VolumeControl'
 import { Visualizer } from './components/Visualizer'
 import { Playlist } from './components/Playlist'
-import { VideoControls } from './components/VideoControls'
+import { VideoControls, type SubtitlesState } from './components/VideoControls'
+import { SubtitleOverlay } from './components/SubtitleOverlay'
 import { StatusBar } from './components/StatusBar'
 import { Icon } from './components/Icon'
 import { createId } from './utils/id'
@@ -13,17 +14,73 @@ import { NowPlaying } from './components/NowPlaying'
 import { AboutDialog } from './components/AboutDialog'
 import { LyricsView, type LyricsState } from './components/LyricsView'
 import type { Track, RepeatMode } from './types'
-import type { YtSearchResult, MediaTags, M3uEntry } from '../electron/preload'
+import type {
+  YtSearchResult,
+  MediaTags,
+  M3uEntry,
+  ResumeSave,
+  SubtitleCue,
+} from '../electron/preload'
 import { usePlaylist, trackKey } from './hooks/usePlaylist'
 import { useLibrary, type NamedList } from './hooks/useLibrary'
 import { useAudioEngine } from './hooks/useAudioEngine'
 import { useDropFiles } from './hooks/useDropFiles'
 import { useRainbowAccent } from './hooks/useRainbowAccent'
 import { buildTracks } from './utils/media'
+import { useT } from './i18n'
 
 const FADE_STEPS = [0, 2, 4, 6]
+const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
+const SLEEP_STEPS = [0, 15, 30, 45, 60, 90]
+/** Segundos que dura el fundido final del temporizador. */
+const SLEEP_FADE = 5
+/**
+ * Segundos antes del fundido cruzado en que se empieza a cargar la cola. Los
+ * streams (YouTube, archivos convertidos) tardan mas en arrancar.
+ */
+const GHOST_LEAD_NATIVE = 5
+const GHOST_LEAD_STREAM = 12
+/** No se retoma una cancion si quedo a menos de esto del final. */
+const RESUME_END_MARGIN = 5
+
+/** Pista pedida para reproducir; el token fuerza reiniciar aunque sea la misma. */
+interface PlayRequest {
+  token: number
+  track: Track | null
+  startAt: number
+}
+
+/**
+ * Como se entrega la pista: directo (con seek nativo por rangos) o como
+ * stream de ffmpeg (YouTube y formatos que Chromium no lee), que no admite
+ * seek y se reinicia desde el segundo pedido.
+ */
+interface StreamInfo {
+  streamed: boolean
+  duration: number | null
+}
+
+/** Estado del fundido cruzado de la pista actual. */
+interface CrossfadeState {
+  phase: 'idle' | 'prepared' | 'done'
+  timer: number | null
+}
+
+/** URL de reproduccion de una pista, empezando en `startAt` si es un stream. */
+function sourceUrl(track: Track, startAt: number, streamed: boolean, audioOnly = false): string {
+  const start = Math.floor(startAt)
+  if (track.source === 'youtube' && track.videoId) {
+    const params = new URLSearchParams()
+    if (start > 0) params.set('t', String(start))
+    if (track.kind === 'video' && !audioOnly) params.set('v', '1')
+    const query = params.toString()
+    return `wmedia://youtube/${track.videoId}${query ? `?${query}` : ''}`
+  }
+  return streamed && start > 0 ? `${track.url}?t=${start}` : track.url
+}
 
 export default function App() {
+  const { t, lang } = useT()
   const mediaRef = useRef<HTMLVideoElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   useRainbowAccent()
@@ -35,24 +92,28 @@ export default function App() {
   const [showAbout, setShowAbout] = useState(false)
   // El menu de la bandeja tambien abre "Acerca de".
   useEffect(() => window.winmusic.onShowAbout(() => setShowAbout(true)), [])
+  // La bandeja y los dialogos nativos usan el mismo idioma que la interfaz.
+  useEffect(() => window.winmusic.setLanguage(lang), [lang])
   const [lyrics, setLyrics] = useState<LyricsState>({ status: 'loading' })
   const [tags, setTags] = useState<MediaTags | null>(null)
   const [fadeSeconds, setFadeSeconds] = useState(() => {
     const saved = Number(localStorage.getItem('wm-fade'))
     return FADE_STEPS.includes(saved) ? saved : 0
   })
-  const fadingOutRef = useRef(false)
   const { dragging } = useDropFiles((paths) => {
     void playlist.addPaths(paths)
   })
   const [eqOpen, setEqOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [loading, setLoading] = useState(false)
-  // YouTube llega como stream sin rangos: al adelantar se reinicia desde un
-  // segundo dado, y el tiempo del elemento cuenta desde ahi. Este desfase se
-  // suma para mostrar la posicion real de la cancion.
-  const [ytOffset, setYtOffset] = useState(0)
-  const ytSeekRef = useRef<{ play: boolean; cleanup: () => void } | null>(null)
+  const [stream, setStream] = useState<StreamInfo>({ streamed: false, duration: null })
+  // Un stream reiniciado desde un segundo dado cuenta su tiempo desde ahi:
+  // este desfase se suma para mostrar la posicion real de la cancion.
+  const [streamOffset, setStreamOffset] = useState(0)
+  const streamSeekRef = useRef<{ play: boolean; cleanup: () => void } | null>(null)
+  const xfadeRef = useRef<CrossfadeState>({ phase: 'idle', timer: null })
+  const [subCues, setSubCues] = useState<SubtitleCue[] | null>(null)
+  const [subsOn, setSubsOn] = useState(true)
   const [theme, setTheme] = useState<'dark' | 'light'>(
     () => (localStorage.getItem('wm-theme') as 'dark' | 'light') || 'dark',
   )
@@ -62,13 +123,14 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('wm-theme', theme)
   }, [theme])
-  // Peticion de reproduccion: token (para forzar reinicio aunque sea la misma
-  // pista) + el indice exacto a reproducir (evita leer un estado desfasado).
-  const [playRequest, setPlayRequest] = useState<{ token: number; index: number }>({
-    token: 0,
-    index: -1,
-  })
-  const hydratedRef = useRef(false)
+
+  const [playRequest, setPlayRequest] = useState<PlayRequest>({ token: 0, track: null, startAt: 0 })
+  const requestPlay = useCallback((track: Track, startAt = 0) => {
+    setPlayRequest((r) => ({ token: r.token + 1, track, startAt }))
+  }, [])
+  const [hydrated, setHydrated] = useState(false)
+  // Cancion y segundo donde quedo la sesion anterior (se retoma con Play).
+  const resumeRef = useRef<ResumeSave | null>(null)
 
   // Restaura playlist y audio guardados al iniciar.
   const { hydrate } = playlist
@@ -79,9 +141,12 @@ export default function App() {
     window.winmusic.loadState().then((saved) => {
       if (!active) return
       const activeTracks = saved.playlist.tracks as Track[]
+      const resume = saved.playlist.resume ?? null
+      resumeRef.current = resume
       hydrate({
         tracks: activeTracks,
-        currentIndex: -1, // no autoreproducir al abrir
+        // No se autoreproduce: solo se marca la cancion donde quedo.
+        currentIndex: resume ? activeTracks.findIndex((tr) => trackKey(tr) === resume.key) : -1,
         shuffle: saved.playlist.shuffle,
         repeat: saved.playlist.repeat as RepeatMode,
       })
@@ -95,8 +160,9 @@ export default function App() {
         muted: saved.audio.muted,
         eqGains: saved.audio.eqGains,
         eqPreset: saved.audio.eqPreset,
+        playbackRate: saved.audio.playbackRate,
       })
-      hydratedRef.current = true
+      setHydrated(true)
     })
     // Sincroniza el estado de los botones con las ventanas restauradas.
     window.winmusic.getWindowsOpenState().then((s) => {
@@ -111,7 +177,7 @@ export default function App() {
 
   // Guarda la playlist y la biblioteca cuando cambian (tras la hidratacion).
   useEffect(() => {
-    if (!hydratedRef.current) return
+    if (!hydrated) return
     window.winmusic.savePlaylist({
       tracks: playlist.tracks,
       currentIndex: playlist.currentIndex,
@@ -121,6 +187,7 @@ export default function App() {
       activeId: library.activeId,
     })
   }, [
+    hydrated,
     playlist.tracks,
     playlist.currentIndex,
     playlist.shuffle,
@@ -129,73 +196,106 @@ export default function App() {
     library.activeId,
   ])
 
-  // Guarda el estado de audio (volumen, mute, EQ) cuando cambia.
+  // Guarda el estado de audio (volumen, mute, EQ, velocidad) cuando cambia.
   useEffect(() => {
-    if (!hydratedRef.current) return
+    if (!hydrated) return
     window.winmusic.saveAudio({
       volume: engine.volume,
       muted: engine.muted,
       eqGains: engine.eqGains,
       eqPreset: engine.eqPreset,
+      playbackRate: engine.playbackRate,
     })
-  }, [engine.volume, engine.muted, engine.eqGains, engine.eqPreset])
+  }, [hydrated, engine.volume, engine.muted, engine.eqGains, engine.eqPreset, engine.playbackRate])
 
   // Pista que esta sonando. Es independiente de la lista visible: al cambiar
   // de lista sigue sonando aunque no este en la nueva.
   const [playingTrack, setPlayingTrack] = useState<Track | null>(null)
   const current = playingTrack
 
+  // Lista vigente para los callbacks asincronos (se actualiza en cada render).
+  const tracksRef = useRef(playlist.tracks)
+  tracksRef.current = playlist.tracks
+
   // Resalta en la lista visible la pista que suena (o nada si no esta ahi).
   const { tracks: visibleTracks, setCurrentIndex } = playlist
   useEffect(() => {
     if (!playingTrack) return
     const key = trackKey(playingTrack)
-    setCurrentIndex(visibleTracks.findIndex((t) => trackKey(t) === key))
+    setCurrentIndex(visibleTracks.findIndex((tr) => trackKey(tr) === key))
   }, [playingTrack, visibleTracks, library.activeId, setCurrentIndex])
 
-  const isYoutube = current?.source === 'youtube' && !!current.videoId
-  const position = engine.currentTime + (isYoutube ? ytOffset : 0)
+  const offset = stream.streamed ? streamOffset : 0
+  const position = engine.currentTime + offset
+
+  // Guarda donde va la cancion cada 5 s (y al pausar) para retomarla al
+  // volver a abrir la app.
+  const positionRef = useRef(position)
+  positionRef.current = position
+  const resumeBucket = Math.floor(position / 5)
+  useEffect(() => {
+    // Mientras carga, la posicion aun es la de la pista anterior.
+    if (!hydrated || !playingTrack || loading) return
+    window.winmusic.saveResume({ key: trackKey(playingTrack), position: positionRef.current })
+  }, [hydrated, playingTrack, loading, resumeBucket, engine.playing])
 
   // Posicion que se esta escuchando: leida directo del elemento (mas precisa
   // que `position`, que llega con timeupdate cada ~250 ms) y descontando el
-  // retardo de salida del audio. La usan las letras.
+  // retardo de salida del audio. La usan las letras y los subtitulos.
   const { getOutputLatency } = engine
   const getExactTime = useCallback(
-    () =>
-      (mediaRef.current?.currentTime ?? 0) + (isYoutube ? ytOffset : 0) - getOutputLatency(),
-    [isYoutube, ytOffset, getOutputLatency],
+    () => (mediaRef.current?.currentTime ?? 0) + offset - getOutputLatency(),
+    [offset, getOutputLatency],
   )
 
-  // Salta a un segundo de la pista actual. Los archivos locales usan el seek
-  // nativo; YouTube reinicia el stream desde ese punto (ffmpeg -ss).
+  const {
+    disposeGhost,
+    prepareGhost,
+    startGhostTail,
+    play: enginePlay,
+    pause: enginePause,
+    fadeTo: engineFadeTo,
+    seek: engineSeek,
+  } = engine
+
+  /** Anula el fundido cruzado en curso (al adelantar o detener). */
+  const cancelCrossfade = useCallback(() => {
+    const x = xfadeRef.current
+    if (x.timer != null) window.clearTimeout(x.timer)
+    xfadeRef.current = { phase: 'idle', timer: null }
+    disposeGhost()
+  }, [disposeGhost])
+
+  // Salta a un segundo de la pista actual. Los archivos directos usan el seek
+  // nativo; los streams se reinician desde ese punto (ffmpeg -ss).
   const seekTo = useCallback(
     (time: number) => {
       const media = mediaRef.current
       if (!media || !media.src || !current) return
       const target = Math.max(0, time)
+      cancelCrossfade()
       // Si estaba en pleno fundido de salida, el salto recupera el volumen.
-      fadingOutRef.current = false
-      engine.fadeTo(1, 0.15)
-      if (current.source !== 'youtube' || !current.videoId) {
-        engine.seek(target)
+      engineFadeTo(1, 0.15)
+      if (!stream.streamed) {
+        engineSeek(target)
         return
       }
       // Si hay un salto pendiente, se respeta su intencion de reproducir.
-      const shouldPlay = ytSeekRef.current ? ytSeekRef.current.play : !media.paused
-      ytSeekRef.current?.cleanup()
+      const shouldPlay = streamSeekRef.current ? streamSeekRef.current.play : !media.paused
+      streamSeekRef.current?.cleanup()
 
       const onCanPlay = () => {
-        ytSeekRef.current = null
-        if (shouldPlay) engine.play()
+        streamSeekRef.current = null
+        if (shouldPlay) enginePlay()
         else setLoading(false)
       }
       const onError = () => {
-        ytSeekRef.current = null
+        streamSeekRef.current = null
         setLoading(false)
       }
       media.addEventListener('canplay', onCanPlay, { once: true })
       media.addEventListener('error', onError, { once: true })
-      ytSeekRef.current = {
+      streamSeekRef.current = {
         play: shouldPlay,
         cleanup: () => {
           media.removeEventListener('canplay', onCanPlay)
@@ -203,36 +303,45 @@ export default function App() {
         },
       }
 
-      setYtOffset(Math.floor(target))
+      setStreamOffset(Math.floor(target))
       setLoading(true)
-      media.src = `wmedia://youtube/${current.videoId}?t=${Math.floor(target)}`
+      media.src = sourceUrl(current, target, true)
       media.load()
     },
-    [current, engine],
+    [current, stream.streamed, cancelCrossfade, engineFadeTo, engineSeek, enginePlay],
   )
 
-  // Selecciona una pista y fuerza su reproduccion desde el inicio.
+  /**
+   * Reproduce la pista de la lista visible. `resume`: si es la cancion donde
+   * quedo la sesion anterior, sigue desde ese segundo (boton Play).
+   */
   const playIndex = useCallback(
-    (index: number) => {
-      if (index < 0 || index >= playlist.tracks.length) return
+    (index: number, resume = false) => {
+      const track = playlist.tracks[index]
+      if (!track) return
+      const saved = resumeRef.current
+      resumeRef.current = null
+      const nearEnd = track.duration != null && saved != null && saved.position > track.duration - RESUME_END_MARGIN
+      const startAt = resume && saved && saved.key === trackKey(track) && !nearEnd ? saved.position : 0
       playlist.setCurrentIndex(index)
-      setPlayRequest((r) => ({ token: r.token + 1, index }))
+      requestPlay(track, startAt)
     },
-    [playlist],
+    [playlist, requestPlay],
   )
 
   const handleNext = useCallback(
     (manual: boolean) => {
       const next = playlist.pickNextIndex(manual)
       if (next === -1) {
-        engine.pause()
+        enginePause()
         return
       }
-      playlist.setCurrentIndex(next)
-      setPlayRequest((r) => ({ token: r.token + 1, index: next }))
+      playIndex(next)
     },
-    [playlist, engine],
+    [playlist, enginePause, playIndex],
   )
+  const handleNextRef = useRef(handleNext)
+  handleNextRef.current = handleNext
 
   // Boton play/pausa del transporte. Si no hay nada cargado, inicia la pista
   // actual (o la primera de la lista). Si ya hay media cargado, alterna.
@@ -244,8 +353,8 @@ export default function App() {
       return
     }
     const index = playlist.currentIndex >= 0 ? playlist.currentIndex : 0
-    if (index < playlist.tracks.length) playIndex(index)
-  }, [engine, playlist.currentIndex, playlist.tracks.length, playIndex])
+    playIndex(index, true)
+  }, [engine, playlist.currentIndex, playIndex])
 
   const handlePrev = useCallback(() => {
     if (position > 3) {
@@ -253,34 +362,34 @@ export default function App() {
       return
     }
     const prev = playlist.pickPrevIndex()
-    if (prev === -1) return
-    playlist.setCurrentIndex(prev)
-    setPlayRequest((r) => ({ token: r.token + 1, index: prev }))
-  }, [playlist, position, seekTo])
+    if (prev !== -1) playIndex(prev)
+  }, [playlist, position, seekTo, playIndex])
 
   const handleStop = useCallback(() => {
-    engine.pause()
+    enginePause()
     seekTo(0)
-  }, [engine, seekTo])
+  }, [enginePause, seekTo])
 
   /** Detiene y vacia el elemento media (al quedar sin pista actual). */
   const clearMedia = useCallback(() => {
     const media = mediaRef.current
     if (!media) return
-    ytSeekRef.current?.cleanup()
-    ytSeekRef.current = null
-    setYtOffset(0)
+    streamSeekRef.current?.cleanup()
+    streamSeekRef.current = null
+    cancelCrossfade()
+    setStreamOffset(0)
     setPlayingTrack(null)
+    window.winmusic.saveResume(null)
     media.pause()
     media.removeAttribute('src')
     media.load()
-  }, [])
+  }, [cancelCrossfade])
 
-  // Quita una pista; si era la que sonaba, detiene y limpia el reproductor.
+  // Quita pistas; si una era la que sonaba, detiene y limpia el reproductor.
   const handleRemove = useCallback(
-    (index: number) => {
-      const wasCurrent = index === playlist.currentIndex
-      playlist.removeAt(index)
+    (indices: number[]) => {
+      const wasCurrent = indices.includes(playlist.currentIndex)
+      playlist.removeMany(indices)
       if (wasCurrent) clearMedia()
     },
     [playlist, clearMedia],
@@ -293,41 +402,39 @@ export default function App() {
     if (playingHere) clearMedia()
   }, [playlist, clearMedia])
 
-  // Carga y reproduce la pista solicitada. Toma la pista por indice desde un
-  // ref a la lista para no depender de `current` (que va un render atrasado y
-  // hacia que el primer doble clic no reprodujera).
-  const enginePlay = engine.play
-  const engineFadeTo = engine.fadeTo
   // Ref para que cambiar el fundido no re-ejecute la carga de la pista.
   const fadeSecondsRef = useRef(fadeSeconds)
   useEffect(() => {
     fadeSecondsRef.current = fadeSeconds
     localStorage.setItem('wm-fade', String(fadeSeconds))
   }, [fadeSeconds])
-  const tracksRef = useRef(playlist.tracks)
-  useEffect(() => {
-    tracksRef.current = playlist.tracks
-  }, [playlist.tracks])
 
+  // Carga y reproduce la pista pedida. Los archivos locales se consultan
+  // antes para saber si se entregan directo o convertidos por ffmpeg.
+  const { setDuration } = playlist
   useEffect(() => {
-    if (playRequest.token === 0) return // no autoreproducir al iniciar
+    const { track, startAt } = playRequest
     const media = mediaRef.current
-    const track = tracksRef.current[playRequest.index]
-    if (!media || !track) return
+    if (playRequest.token === 0 || !track || !media) return
+    let cancelled = false
     setPlayingTrack(track)
 
-    // Una pista nueva empieza desde 0 y anula cualquier salto pendiente.
-    ytSeekRef.current?.cleanup()
-    ytSeekRef.current = null
-    setYtOffset(0)
-
-    const url =
-      track.source === 'youtube' && track.videoId
-        ? `wmedia://youtube/${track.videoId}`
-        : track.url
-
+    // Una pista nueva anula cualquier salto pendiente. Si la anterior dejo su
+    // cola sonando (fundido cruzado) se respeta; si solo estaba preparada, sobra.
+    streamSeekRef.current?.cleanup()
+    streamSeekRef.current = null
+    const x = xfadeRef.current
+    if (x.timer != null) window.clearTimeout(x.timer)
+    if (x.phase === 'prepared') disposeGhost()
+    xfadeRef.current = { phase: 'idle', timer: null }
+    setSubCues(null)
+    setSubsOn(true)
     setLoading(true)
-    fadingOutRef.current = false
+
+    let streamed = track.source === 'youtube'
+    const onLoadedMeta = () => {
+      if (!streamed && startAt > 0) media.currentTime = startAt
+    }
     const onCanPlay = () => {
       enginePlay()
       // Fundido de entrada (o volumen completo si esta desactivado).
@@ -337,33 +444,61 @@ export default function App() {
     }
     const onPlaying = () => setLoading(false)
     const onError = () => setLoading(false)
-    media.addEventListener('canplay', onCanPlay, { once: true })
-    media.addEventListener('playing', onPlaying)
-    media.addEventListener('error', onError)
-    media.src = url
-    media.load()
+
+    const start = async () => {
+      let duration = track.duration
+      if (track.source === 'local') {
+        try {
+          const probe = await window.winmusic.probeMedia(track.path)
+          streamed = !probe.nativePlayable
+          if (streamed && probe.duration) {
+            duration = probe.duration
+            setDuration(track.id, probe.duration)
+          }
+        } catch (err) {
+          // Sin datos del archivo se intenta directo; si no existe, el
+          // elemento media dispara su propio error.
+          console.warn('[winmusic] no se pudo analizar el archivo:', err)
+        }
+        if (track.kind === 'video') {
+          window.winmusic
+            .findSubtitles(track.path)
+            .then((cues) => !cancelled && cues && setSubCues(cues))
+            .catch((err) => console.warn('[winmusic] no se pudieron leer los subtitulos:', err))
+        }
+      }
+      if (cancelled) return
+      setStream({ streamed, duration })
+      setStreamOffset(streamed ? Math.floor(startAt) : 0)
+      media.addEventListener('loadedmetadata', onLoadedMeta, { once: true })
+      media.addEventListener('canplay', onCanPlay, { once: true })
+      media.addEventListener('playing', onPlaying)
+      media.addEventListener('error', onError)
+      media.src = sourceUrl(track, startAt, streamed)
+      media.load()
+    }
+    void start()
 
     return () => {
+      cancelled = true
+      media.removeEventListener('loadedmetadata', onLoadedMeta)
       media.removeEventListener('canplay', onCanPlay)
       media.removeEventListener('playing', onPlaying)
       media.removeEventListener('error', onError)
     }
-  }, [playRequest, enginePlay, engineFadeTo])
+  }, [playRequest, enginePlay, engineFadeTo, disposeGhost, setDuration])
 
-  // Guarda la duracion cuando el metadata esta disponible.
+  // Guarda la duracion de los archivos directos cuando el metadata esta
+  // disponible. En los streams no sirve: es solo lo que queda desde el salto.
   useEffect(() => {
     const media = mediaRef.current
-    // En YouTube la duracion viene de la busqueda; la del stream (que puede
-    // empezar a mitad de cancion al adelantar) no es la real.
-    if (!media || !current || current.source === 'youtube') return
+    if (!media || !current || stream.streamed) return
     const onMeta = () => {
-      if (Number.isFinite(media.duration)) {
-        playlist.setDuration(current.id, media.duration)
-      }
+      if (Number.isFinite(media.duration)) setDuration(current.id, media.duration)
     }
     media.addEventListener('loadedmetadata', onMeta)
     return () => media.removeEventListener('loadedmetadata', onMeta)
-  }, [current, playlist])
+  }, [current, stream.streamed, setDuration])
 
   // Avanza al terminar la pista.
   useEffect(() => {
@@ -415,18 +550,37 @@ export default function App() {
     await playlist.addPaths(paths)
   }, [playlist])
 
+  // Archivos abiertos desde el Explorador: se agregan a la lista activa (sin
+  // duplicar) y suena el primero.
+  const { appendTracks } = playlist
+  const openPaths = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return
+      const existing = new Map(tracksRef.current.map((tr) => [trackKey(tr), tr]))
+      const tracks = (await buildTracks(paths)).map((tr) => existing.get(trackKey(tr)) ?? tr)
+      appendTracks(tracks.filter((tr) => !existing.has(trackKey(tr))))
+      requestPlay(tracks[0])
+    },
+    [appendTracks, requestPlay],
+  )
+  useEffect(() => {
+    if (!hydrated) return
+    void window.winmusic.takeLaunchFiles().then(openPaths)
+    return window.winmusic.onOpenFiles((paths) => void openPaths(paths))
+  }, [hydrated, openPaths])
+
   const cycleRepeat = useCallback(() => {
     playlist.setRepeat((r) => (r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'))
   }, [playlist])
 
-  const ytResultToTrack = useCallback((r: YtSearchResult): Track => {
+  const ytResultToTrack = useCallback((r: YtSearchResult, asVideo: boolean): Track => {
     return {
       id: createId(),
       path: `youtube:${r.id}`,
       url: '',
       name: r.title,
       ext: '',
-      kind: 'audio',
+      kind: asVideo ? 'video' : 'audio',
       duration: r.duration,
       source: 'youtube',
       videoId: r.id,
@@ -434,16 +588,16 @@ export default function App() {
   }, [])
 
   const addYoutube = useCallback(
-    (r: YtSearchResult) => {
-      playlist.addTrack(ytResultToTrack(r))
+    (r: YtSearchResult, asVideo: boolean) => {
+      playlist.addTrack(ytResultToTrack(r, asVideo))
     },
     [playlist, ytResultToTrack],
   )
 
   // Puente IPC con la ventana del buscador de YouTube.
   useEffect(() => {
-    const offAdd = window.winmusic.onSearchAddResult((r) => {
-      addYoutube(r)
+    const offAdd = window.winmusic.onSearchAddResult((r, asVideo) => {
+      addYoutube(r, asVideo)
       setSearchOpen(true)
     })
     const offClosed = window.winmusic.onSearchWindowClosed(() => setSearchOpen(false))
@@ -459,32 +613,90 @@ export default function App() {
   }, [addYoutube])
 
   const isVideo = current?.kind === 'video'
+  const isYoutube = current?.source === 'youtube' && !!current.videoId
 
-  // En YouTube la duracion real es la del resultado de busqueda (el stream MP3
-  // no la reporta, o reporta solo lo que queda tras adelantar). En archivos
-  // locales manda la del elemento.
+  // En los streams la duracion real viene de la busqueda o de ffprobe (el
+  // elemento solo ve lo que queda tras adelantar). En los directos, la del
+  // elemento.
   const effectiveDuration =
-    isYoutube && current?.duration
-      ? current.duration
+    stream.streamed && stream.duration
+      ? stream.duration
       : engine.duration > 0 && Number.isFinite(engine.duration)
         ? engine.duration
         : (current?.duration ?? 0)
 
-  // Fundido de salida: al entrar en los ultimos segundos, baja el volumen
-  // hasta 0 justo al terminar (la siguiente pista entra con fundido).
+  /**
+   * Fundido cruzado: unos segundos antes se prepara en silencio la cola de la
+   * cancion actual desde el punto de cruce. Al llegar ahi, la cola sigue
+   * sonando mientras baja y la siguiente entra con su fundido de entrada. Si
+   * la cola no alcanzo a cargar, la cancion se apaga sola hasta terminar.
+   */
   const enginePlaying = engine.playing
+  const { pickNextIndex } = playlist
+  const playbackRate = engine.playbackRate
   useEffect(() => {
-    if (fadeSeconds <= 0 || !enginePlaying || effectiveDuration <= 0) return
-    const remaining = effectiveDuration - position
-    if (remaining > 0 && remaining <= fadeSeconds && !fadingOutRef.current) {
-      fadingOutRef.current = true
-      engineFadeTo(0, remaining)
+    const x = xfadeRef.current
+    if (!enginePlaying) {
+      // Pausar descarta la cola preparada; se vuelve a preparar al seguir.
+      if (x.timer != null) window.clearTimeout(x.timer)
+      x.timer = null
+      if (x.phase === 'prepared') x.phase = 'idle'
+      return
     }
-  }, [position, effectiveDuration, fadeSeconds, enginePlaying, engineFadeTo])
+    // Mientras carga, la posicion y la duracion aun son de la pista anterior.
+    if (loading || fadeSeconds <= 0 || effectiveDuration <= 0 || !current || x.phase === 'done') return
+    const crossAt = Math.floor(effectiveDuration - fadeSeconds)
+    if (crossAt <= 0 || position >= effectiveDuration) return
+
+    const lead = stream.streamed ? GHOST_LEAD_STREAM : GHOST_LEAD_NATIVE
+    if (x.phase === 'idle' && position >= crossAt - lead && position < crossAt - 1) {
+      if (pickNextIndex(false) !== -1) {
+        prepareGhost(sourceUrl(current, crossAt, stream.streamed, true), crossAt, !stream.streamed)
+        x.phase = 'prepared'
+      }
+    }
+
+    // Cerca del cruce se programa el momento exacto (timeupdate es impreciso).
+    if (position >= crossAt - 1 && x.timer == null) {
+      const exact = (mediaRef.current?.currentTime ?? 0) + offset
+      const delay = Math.max(0, ((crossAt - exact) / playbackRate) * 1000)
+      x.timer = window.setTimeout(() => {
+        x.timer = null
+        x.phase = 'done'
+        if (startGhostTail(fadeSeconds)) {
+          handleNextRef.current(false)
+        } else {
+          disposeGhost()
+          engineFadeTo(0, Math.max(0.1, (effectiveDuration - crossAt) / playbackRate))
+        }
+      }, delay)
+    }
+  }, [
+    position,
+    effectiveDuration,
+    fadeSeconds,
+    enginePlaying,
+    loading,
+    current,
+    stream.streamed,
+    offset,
+    playbackRate,
+    pickNextIndex,
+    prepareGhost,
+    startGhostTail,
+    disposeGhost,
+    engineFadeTo,
+  ])
 
   const cycleFade = useCallback(() => {
     setFadeSeconds((s) => FADE_STEPS[(FADE_STEPS.indexOf(s) + 1) % FADE_STEPS.length])
   }, [])
+
+  const { setPlaybackRate } = engine
+  const cycleSpeed = useCallback(() => {
+    const index = SPEED_STEPS.indexOf(playbackRate)
+    setPlaybackRate(SPEED_STEPS[(index + 1) % SPEED_STEPS.length] ?? 1)
+  }, [playbackRate, setPlaybackRate])
 
   // Mensaje breve en la barra de estado (resultado de importar/exportar).
   const [notice, setNotice] = useState<string | null>(null)
@@ -494,6 +706,65 @@ export default function App() {
     const id = window.setTimeout(() => setNotice(null), 4000)
     return () => window.clearTimeout(id)
   }, [notice])
+
+  // Temporizador para dormir: al cumplirse, baja el volumen y pausa.
+  const [sleep, setSleep] = useState<{ minutes: number; endsAt: number } | null>(null)
+  const [clock, setClock] = useState(() => Date.now())
+  useEffect(() => {
+    if (!sleep) return
+    const id = window.setInterval(() => setClock(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [sleep])
+  const sleepPauseRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!sleep || clock < sleep.endsAt) return
+    setSleep(null)
+    setNotice(t('notice.sleepDone'))
+    engineFadeTo(0, SLEEP_FADE)
+    sleepPauseRef.current = window.setTimeout(() => {
+      sleepPauseRef.current = null
+      enginePause()
+      engineFadeTo(1, 0.01)
+    }, SLEEP_FADE * 1000)
+  }, [clock, sleep, t, engineFadeTo, enginePause])
+  useEffect(
+    () => () => {
+      if (sleepPauseRef.current != null) window.clearTimeout(sleepPauseRef.current)
+    },
+    [],
+  )
+
+  const cycleSleep = useCallback(() => {
+    const index = SLEEP_STEPS.indexOf(sleep?.minutes ?? 0)
+    const minutes = SLEEP_STEPS[(index + 1) % SLEEP_STEPS.length]
+    const now = Date.now()
+    setClock(now)
+    setSleep(minutes > 0 ? { minutes, endsAt: now + minutes * 60_000 } : null)
+  }, [sleep])
+  const sleepMinutesLeft = sleep ? Math.max(1, Math.ceil((sleep.endsAt - clock) / 60_000)) : null
+
+  // Subtitulos: si no hay cargados se elige un archivo; si hay, se muestran u ocultan.
+  const handleSubtitles = useCallback(async () => {
+    if (subCues) {
+      setSubsOn((on) => !on)
+      return
+    }
+    try {
+      const cues = await window.winmusic.openSubtitles()
+      if (!cues) return
+      if (cues.length === 0) {
+        setNotice(t('notice.subtitlesFailed'))
+        return
+      }
+      setSubCues(cues)
+      setSubsOn(true)
+      setNotice(t('notice.subtitlesLoaded'))
+    } catch (err) {
+      console.error('[winmusic] error al cargar subtitulos:', err)
+      setNotice(t('notice.subtitlesFailed'))
+    }
+  }, [subCues, t])
+  const subtitlesState: SubtitlesState = subCues ? (subsOn ? 'on' : 'off') : 'none'
 
   // Etiquetas (titulo, artista, caratula) de los archivos de audio locales.
   const currentId = current?.id
@@ -505,7 +776,7 @@ export default function App() {
     let active = true
     window.winmusic
       .getTags(currentPath)
-      .then((t) => active && setTags(t))
+      .then((tg) => active && setTags(tg))
       .catch((err) => console.warn('[winmusic] no se pudieron leer las etiquetas:', err))
     return () => {
       active = false
@@ -563,20 +834,20 @@ export default function App() {
     try {
       const saved = await window.winmusic.exportPlaylist(
         library.activeName,
-        playlist.tracks.map((t) => ({
-          path: t.path,
-          name: t.name,
-          duration: t.duration,
-          source: t.source,
-          videoId: t.videoId,
+        playlist.tracks.map((tr) => ({
+          path: tr.path,
+          name: tr.name,
+          duration: tr.duration,
+          source: tr.source,
+          videoId: tr.videoId,
         })),
       )
-      if (saved) setNotice('Lista exportada')
+      if (saved) setNotice(t('notice.listExported'))
     } catch (err) {
       console.error('[winmusic] error al exportar la lista:', err)
-      setNotice('No se pudo exportar la lista')
+      setNotice(t('notice.listExportFailed'))
     }
-  }, [library.activeName, playlist.tracks])
+  }, [library.activeName, playlist.tracks, t])
 
   // Importa un .m3u como lista nueva, conservando el orden del archivo.
   const handleImportList = useCallback(async () => {
@@ -586,7 +857,7 @@ export default function App() {
       const filePaths = result.entries
         .filter((e): e is Extract<M3uEntry, { kind: 'file' }> => e.kind === 'file')
         .map((e) => e.path)
-      const fileTracks = new Map((await buildTracks(filePaths)).map((t) => [t.path, t]))
+      const fileTracks = new Map((await buildTracks(filePaths)).map((tr) => [tr.path, tr]))
       const seen = new Set<string>()
       const tracks: Track[] = []
       for (const e of result.entries) {
@@ -596,65 +867,73 @@ export default function App() {
         const track =
           e.kind === 'file'
             ? fileTracks.get(e.path)
-            : ytResultToTrack({ id: e.videoId, title: e.title, duration: e.duration, channel: null })
+            : ytResultToTrack({ id: e.videoId, title: e.title, duration: e.duration, channel: null }, false)
         if (track) tracks.push(track)
       }
       library.create(result.name, tracks)
-      setNotice(`Lista importada: ${tracks.length} pistas`)
+      setNotice(t('notice.listImported', { n: tracks.length }))
     } catch (err) {
       console.error('[winmusic] error al importar la lista:', err)
-      setNotice('No se pudo importar la lista')
+      setNotice(t('notice.listImportFailed'))
     }
-  }, [library, ytResultToTrack])
+  }, [library, ytResultToTrack, t])
 
   // Respaldo completo (todas las listas, ecualizador y volumen) en un archivo.
   const handleExportBackup = useCallback(async () => {
     try {
-      if (await window.winmusic.exportBackup()) setNotice('Respaldo exportado')
+      if (await window.winmusic.exportBackup()) setNotice(t('notice.backupExported'))
     } catch (err) {
       console.error('[winmusic] error al exportar el respaldo:', err)
-      setNotice('No se pudo exportar el respaldo')
+      setNotice(t('notice.backupExportFailed'))
     }
-  }, [])
+  }, [t])
 
   // Si se importa, el main recarga la ventana con los datos nuevos.
   const handleImportBackup = useCallback(async () => {
     try {
       const result = await window.winmusic.importBackup()
-      if (result === 'invalid') setNotice('El archivo no es un respaldo de winMusic')
+      if (result === 'invalid') setNotice(t('notice.backupInvalid'))
     } catch (err) {
       console.error('[winmusic] error al importar el respaldo:', err)
-      setNotice('No se pudo importar el respaldo')
+      setNotice(t('notice.backupImportFailed'))
     }
-  }, [])
+  }, [t])
 
-  // Copiar / mover una cancion de la lista activa a otra lista.
+  // Copiar / mover canciones de la lista activa a otra lista.
   const listName = useCallback(
     (id: string) => library.lists.find((l) => l.id === id)?.name ?? '',
     [library.lists],
   )
 
   const handleCopyToList = useCallback(
-    (index: number, listId: string) => {
-      const track = playlist.tracks[index]
-      if (!track) return
-      const added = library.addToList(listId, [track])
-      setNotice(added ? `Copiada a «${listName(listId)}»` : `Ya estaba en «${listName(listId)}»`)
+    (indices: number[], listId: string) => {
+      const tracks = indices.map((i) => playlist.tracks[i]).filter((tr): tr is Track => !!tr)
+      if (tracks.length === 0) return
+      const added = library.addToList(listId, tracks)
+      const list = listName(listId)
+      if (added === 0) setNotice(t('notice.alreadyIn', { list }))
+      else if (added === 1) setNotice(t('notice.copiedTo', { list }))
+      else setNotice(t('notice.copiedManyTo', { n: added, list }))
     },
-    [playlist.tracks, library, listName],
+    [playlist.tracks, library, listName, t],
   )
 
   const handleMoveToList = useCallback(
-    (index: number, listId: string) => {
-      const track = playlist.tracks[index]
-      if (!track) return
-      // Si ya estaba en el destino, mover igual la quita de la lista actual.
-      // Si es la que suena, sigue sonando (solo cambia de lista).
-      library.addToList(listId, [track])
-      playlist.removeAt(index)
-      setNotice(`Movida a «${listName(listId)}»`)
+    (indices: number[], listId: string) => {
+      const tracks = indices.map((i) => playlist.tracks[i]).filter((tr): tr is Track => !!tr)
+      if (tracks.length === 0) return
+      // Si ya estaban en el destino, mover igual las quita de la lista actual.
+      // Si una es la que suena, sigue sonando (solo cambia de lista).
+      library.addToList(listId, tracks)
+      playlist.removeMany(indices)
+      const list = listName(listId)
+      setNotice(
+        tracks.length === 1
+          ? t('notice.movedTo', { list })
+          : t('notice.movedManyTo', { n: tracks.length, list }),
+      )
     },
-    [playlist, library, listName],
+    [playlist, library, listName, t],
   )
 
   // Modo mini: barra compacta siempre encima de las demas ventanas.
@@ -721,12 +1000,9 @@ export default function App() {
 
   return (
     <div className={`app${mini ? ' app--mini' : ''}`}>
-      <TitleBar title={current?.name ?? 'Sin reproduccion'} />
+      <TitleBar title={current?.name ?? t('win.noPlayback')} />
 
-      <div
-        ref={stageRef}
-        className={`stage${isVideo ? ' stage--video' : ''}`}
-      >
+      <div ref={stageRef} className={`stage${isVideo ? ' stage--video' : ''}`}>
         <video
           ref={mediaRef}
           className="stage__media"
@@ -740,31 +1016,33 @@ export default function App() {
             engine.toggle()
           }}
         />
-        {!isVideo && (
-          <Visualizer frequencies={engine.frequencies} playing={engine.playing} />
-        )}
+        {!isVideo && <Visualizer frequencies={engine.frequencies} playing={engine.playing} />}
         {!isVideo && current && !showLyrics && (
           <NowPlaying title={displayTitle} artist={displayArtist} coverUrl={coverUrl} />
         )}
         {!isVideo && current && showLyrics && (
           <LyricsView state={lyrics} getTime={getExactTime} offsetKey={trackKey(current)} />
         )}
-        {isVideo && <VideoControls stageRef={stageRef} mediaRef={mediaRef} />}
+        {isVideo && subCues && subsOn && <SubtitleOverlay cues={subCues} getTime={getExactTime} />}
+        {isVideo && (
+          <VideoControls
+            stageRef={stageRef}
+            mediaRef={mediaRef}
+            subtitles={subtitlesState}
+            onSubtitles={() => void handleSubtitles()}
+          />
+        )}
         {loading && (
           <div className="stage__loading">
             <span className="stage__spinner" />
-            <span className="stage__loading-text">Cargando…</span>
+            <span className="stage__loading-text">{t('stage.loading')}</span>
           </div>
         )}
       </div>
 
       <div className="panel">
         <div className="panel__seekrow">
-          <SeekBar
-            currentTime={position}
-            duration={effectiveDuration}
-            onSeek={seekTo}
-          />
+          <SeekBar currentTime={position} duration={effectiveDuration} onSeek={seekTo} />
           <VolumeControl
             volume={engine.volume}
             muted={engine.muted}
@@ -789,8 +1067,8 @@ export default function App() {
             <button
               className={`controls__btn${eqOpen ? ' is-active' : ''}`}
               onClick={() => window.winmusic.toggleEqWindow()}
-              aria-label="Ecualizador"
-              title="Ecualizador"
+              aria-label={t('ctl.eq')}
+              title={t('ctl.eq')}
             >
               <Icon name="equalizer" />
             </button>
@@ -800,32 +1078,32 @@ export default function App() {
                 window.winmusic.toggleSearchWindow()
                 setSearchOpen((v) => !v)
               }}
-              aria-label="Buscar en YouTube"
-              title="Buscar en YouTube"
+              aria-label={t('ctl.search')}
+              title={t('ctl.search')}
             >
               <Icon name="search" />
             </button>
             <button
               className={`controls__btn controls__btn--hide-mini${showLyrics ? ' is-active' : ''}`}
               onClick={() => setShowLyrics((v) => !v)}
-              aria-label="Letra"
-              title="Letra de la cancion"
+              aria-label={t('ctl.lyrics')}
+              title={t('ctl.lyrics')}
             >
               <Icon name="lyrics" />
             </button>
             <button
               className="controls__btn controls__btn--hide-mini"
-              onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-              aria-label="Cambiar tema"
-              title={theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+              onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
+              aria-label={theme === 'dark' ? t('ctl.themeLight') : t('ctl.themeDark')}
+              title={theme === 'dark' ? t('ctl.themeLight') : t('ctl.themeDark')}
             >
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
             </button>
             <button
               className={`controls__btn${mini ? ' is-active' : ''}`}
               onClick={toggleMini}
-              aria-label="Modo mini"
-              title={mini ? 'Salir del modo mini' : 'Modo mini (siempre visible)'}
+              aria-label={mini ? t('ctl.miniOff') : t('ctl.miniOn')}
+              title={mini ? t('ctl.miniOff') : t('ctl.miniOn')}
             >
               <Icon name="mini" />
             </button>
@@ -842,6 +1120,7 @@ export default function App() {
         onSelect={playIndex}
         onRemove={handleRemove}
         onMove={playlist.move}
+        onMoveMany={playlist.moveMany}
         onAddFiles={addFiles}
         onAddFolder={addFolder}
         onClear={handleClear}
@@ -860,7 +1139,7 @@ export default function App() {
 
       {dragging && (
         <div className="dropzone">
-          <div className="dropzone__box">Suelta archivos o carpetas aquí</div>
+          <div className="dropzone__box">{t('stage.drop')}</div>
         </div>
       )}
 
@@ -868,6 +1147,10 @@ export default function App() {
         version={__APP_VERSION__}
         fadeSeconds={fadeSeconds}
         onCycleFade={cycleFade}
+        playbackRate={playbackRate}
+        onCycleSpeed={cycleSpeed}
+        sleepMinutesLeft={sleepMinutesLeft}
+        onCycleSleep={cycleSleep}
         notice={notice}
         onShowAbout={() => setShowAbout(true)}
       />
